@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Placing the call, and knowing when it connects and ends. -->
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+
+    <!--
+      Needed to tell an answered call from one that rang out. Android fires OFFHOOK when an
+      outbound call starts dialling, not when the callee answers, and exposes no "answered"
+      signal at all - so the system call log is the only place the real outcome and the real
+      talk duration exist. Without this every placed call would be reported to the CRM as
+      connected. Restricted on Play, which does not apply to a directly distributed APK.
+    -->
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+
+    <!-- Foreground service keeps the app alive between dialling and hang-up on OEMs
+         that would otherwise evict it mid-call. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Lets WorkManager re-arm pending uploads after a restart. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- Requested at setup, never silently: aggressive power management is the single
+         biggest cause of recordings never being captured on Xiaomi and Oppo hardware. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!--
+      Note there is deliberately no READ_EXTERNAL_STORAGE / MANAGE_EXTERNAL_STORAGE here.
+      The rep grants access to exactly one folder through the system file picker, and that
+      persisted grant is all the access this app ever has to their storage.
+    -->
+
+    <uses-feature
+        android:name="android.hardware.telephony"
+        android:required="true" />
+
+    <!-- Package visibility so the dialler can be resolved on Android 11+. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.DIAL" />
+            <data android:scheme="tel" />
+        </intent>
+    </queries>
+
+    <application
+        android:name=".ArthaxApplication"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Arthax"
+        android:usesCleartextTraffic="false"
+        tools:targetApi="34">
+
+        <!--
+          allowBackup is false on purpose. The session token lives in
+          EncryptedSharedPreferences under a Keystore key that does not leave the device,
+          so a restore onto different hardware produces an unreadable store; and backing
+          up the pending-upload queue without its files would resurrect rows pointing at
+          recordings that no longer exist.
+        -->
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.Arthax"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          The watcher. Long-lived on purpose: it is the only mechanism Android guarantees
+          will keep running, and every alternative was measured failing on real hardware -
+          PHONE_STATE broadcasts are not delivered on Xiaomi without autostart, and
+          scheduled work gets batched or frozen.
+
+          BOTH types are declared, and that is load-bearing. Android requires the type passed
+          to startForeground() to be a subset of what is declared here. From Android 14 the
+          service asks for specialUse, because a dataSync service is stopped after roughly six
+          hours a day and would blind the app mid-shift; on Android 10-13 specialUse does not
+          exist yet, so it asks for dataSync. Declaring only one of them makes the other a
+          hard crash - which is exactly what happened on Android 10/11:
+            "foregroundServiceType 0x00000001 is not a subset of ... 0x40000000"
+        -->
+        <service
+            android:name=".call.CallMonitorService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync|specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Continuously watches the device call log so that calls with CRM leads are matched and their recordings uploaded the moment each call ends." />
+        </service>
+
+        <!--
+          HarvestWorker and UploadWorker run as expedited work, which WorkManager hosts in
+          its own SystemForegroundService rather than in ours. On Android 14+ that service
+          must declare the same foregroundServiceType the worker asks for, or setForeground
+          throws at runtime. Merged in here because the library cannot know our type.
+        -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+
+        <!--
+          Manifest-registered so it still fires when the app has been evicted from memory.
+          ACTION_PHONE_STATE_CHANGED is exempt from the Android 8 implicit-broadcast
+          restrictions, so this stays reliable on current Android.
+        -->
+        <receiver
+            android:name=".call.CallStateReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter android:priority="1000">
+                <action android:name="android.intent.action.PHONE_STATE" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+          Catches up on calls made while the phone was off or before Arthax was next opened.
+        -->
+        <receiver
+            android:name=".call.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+          WorkManager is initialised on demand instead, so that Hilt can supply the
+          HiltWorkerFactory our workers need for constructor injection.
+        -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
+
+    </application>
+
+</manifest>
