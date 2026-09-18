@@ -1,6 +1,7 @@
 package com.example.arthax.data.local.store
 
 import android.content.Context
+import com.example.arthax.call.CallWatermark
 import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
@@ -43,10 +44,24 @@ data class PendingCall(
     @Json(name = "id") val id: String = UUID.randomUUID().toString(),
 
     /**
-     * The phone's own call log row id. This is the call's real identity: reconciling the
-     * log twice, or from two entry points at once, must not create two CRM records.
+     * The phone's own call log row id. Half of the call's identity: reconciling the log
+     * twice, or from two entry points at once, must not create two CRM records.
      */
     @Json(name = "call_log_id") val callLogId: Long,
+
+    /**
+     * When that row said the call began — the other half of the identity.
+     *
+     * The id alone is not enough. Xiaomi and some other builds fold a run of consecutive
+     * unanswered calls to the same number into the row that is already there, bumping its
+     * timestamp rather than inserting a new one. Treating the id as the whole identity meant
+     * every call after the first in such a run was seen as "already handled" and dropped —
+     * which is why a lead could trade seven unanswered calls with a rep and see three.
+     *
+     * Zero on rows written before this field existed; those match on the id alone, so an
+     * upgrade cannot re-post calls that were already delivered.
+     */
+    @Json(name = "call_log_date") val callLogDate: Long = 0,
 
     @Json(name = "lead_id") val leadId: String,
     @Json(name = "lead_name") val leadName: String,
@@ -125,8 +140,16 @@ class PendingCallStore @Inject constructor(
     /** True if this recording was already captured — the guard against double upload. */
     fun existsForSource(uri: String): Boolean = items.value.any { it.sourceUri == uri }
 
-    /** True if this call log entry has already been turned into a CRM record. */
-    fun existsForCallLogId(callLogId: Long): Boolean = items.value.any { it.callLogId == callLogId }
+    /**
+     * True if this call log entry has already been turned into a CRM record.
+     *
+     * Matched on the row id *and* its timestamp, so a row an OEM has re-dated to record a
+     * fresh call counts as the new call it is. A row stored before the timestamp existed
+     * carries zero and still matches on the id alone.
+     */
+    fun existsForCall(callLogId: Long, callLogDate: Long): Boolean = items.value.any {
+        CallWatermark.isSameCall(it.callLogId, it.callLogDate, callLogId, callLogDate)
+    }
 
     fun outstanding(): List<PendingCall> = items.value.filter { it.isOutstanding }
 

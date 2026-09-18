@@ -64,12 +64,32 @@ class CallLogReader @Inject constructor(
             PackageManager.PERMISSION_GRANTED
 
     /**
-     * Calls that started after [sinceMillis], oldest first.
+     * Calls this app has not seen yet, oldest first.
      *
-     * Ordered ascending so the caller can walk forward and move its watermark as it goes;
+     * Two watermarks, and needing both is the whole point.
+     *
+     * **[sinceId] catches calls that started out of order.** Rows are written when a call
+     * *ends*, but DATE is when it *began*, so the two orders disagree whenever calls
+     * overlap — the rep dials, and while it is ringing the lead calls back. The call-back
+     * row is written second but carries the earlier DATE, lands below a date-only watermark,
+     * and is skipped forever. Row ids only ever go up, so they see it.
+     *
+     * **[sinceMillis] catches calls merged into an existing row.** Xiaomi and some other
+     * builds fold consecutive unanswered calls to the same number into the row that is
+     * already there, bumping its DATE instead of inserting. The id does not change, so an
+     * id-only watermark would never look at it again.
+     *
+     * Between them, every genuinely new call is seen exactly once. This is what was capping
+     * a lead at about three calls when the rep and the lead traded a run of unanswered ones.
+     *
+     * Ordered ascending so the caller can walk forward and move its watermarks as it goes;
      * if it is interrupted halfway the unprocessed tail is simply picked up next time.
      */
-    fun entriesSince(sinceMillis: Long, limit: Int = DEFAULT_LIMIT): List<Entry> {
+    fun entriesSince(
+        sinceMillis: Long,
+        sinceId: Long,
+        limit: Int = DEFAULT_LIMIT,
+    ): List<Entry> {
         if (!hasPermission()) return emptyList()
 
         return runCatching {
@@ -82,14 +102,14 @@ class CallLogReader @Inject constructor(
                     CallLog.Calls.DATE,
                     CallLog.Calls.DURATION,
                 ),
-                "${CallLog.Calls.DATE} > ?",
-                arrayOf(sinceMillis.toString()),
+                "${CallLog.Calls._ID} > ? OR ${CallLog.Calls.DATE} > ?",
+                arrayOf(sinceId.toString(), sinceMillis.toString()),
                 // Sort order only. A "LIMIT n" suffix here is rejected by the call log
                 // provider with "Invalid token LIMIT" - it validates the clause rather than
                 // passing it to SQLite. That threw on every read, and because the result was
                 // swallowed it looked exactly like "no new calls": no call was ever detected.
                 // The cap is applied while walking the cursor instead.
-                "${CallLog.Calls.DATE} ASC",
+                "${CallLog.Calls.DATE} ASC, ${CallLog.Calls._ID} ASC",
             )?.use { cursor ->
                 val idIdx = cursor.getColumnIndexOrThrow(CallLog.Calls._ID)
                 val numberIdx = cursor.getColumnIndexOrThrow(CallLog.Calls.NUMBER)
@@ -130,10 +150,46 @@ class CallLogReader @Inject constructor(
         )?.use { if (it.moveToFirst()) it.getLong(0) else 0L } ?: 0L
     }.onFailure { Log.e(TAG, "Reading the newest call log entry failed", it) }.getOrDefault(0L)
 
+    /**
+     * The highest row id among calls that began at or before [dateMillis].
+     *
+     * Used once, to give the id watermark a starting value on an install that only ever had
+     * the date one. Anchoring it to the rows already covered by the date watermark means
+     * nothing still waiting is skipped, and — far more importantly — the phone's entire call
+     * history is not suddenly swept up and posted to the CRM as though it all just happened.
+     */
+    fun newestIdAtOrBefore(dateMillis: Long): Long = runCatching {
+        context.contentResolver.query(
+            CallLog.Calls.CONTENT_URI,
+            arrayOf(CallLog.Calls._ID),
+            "${CallLog.Calls.DATE} <= ?",
+            arrayOf(dateMillis.toString()),
+            "${CallLog.Calls._ID} DESC",
+        )?.use { if (it.moveToFirst()) it.getLong(0) else 0L } ?: 0L
+    }.onFailure { Log.e(TAG, "Reading the newest call log id failed", it) }.getOrDefault(0L)
+
+    /** The highest row id in the log, for arming a brand new session. */
+    fun newestId(): Long = runCatching {
+        context.contentResolver.query(
+            CallLog.Calls.CONTENT_URI,
+            arrayOf(CallLog.Calls._ID),
+            null,
+            null,
+            "${CallLog.Calls._ID} DESC",
+        )?.use { if (it.moveToFirst()) it.getLong(0) else 0L } ?: 0L
+    }.onFailure { Log.e(TAG, "Reading the newest call log id failed", it) }.getOrDefault(0L)
+
     private companion object {
         const val TAG = "ArthaxCallLog"
 
-        /** Generous, but bounded so a first run after a long gap cannot stall. */
-        const val DEFAULT_LIMIT = 200
+        /**
+         * Generous, but bounded so a first run after a long gap cannot stall.
+         *
+         * Raised when the reconcile started re-reading a trailing window rather than only
+         * what is past the watermark: most rows in that window are recognised and skipped in
+         * memory, but they still have to be *returned* to be recognised. Truncating here
+         * would drop the newest calls, since rows come back oldest first.
+         */
+        const val DEFAULT_LIMIT = 500
     }
 }

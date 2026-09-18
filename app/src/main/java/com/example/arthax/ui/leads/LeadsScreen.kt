@@ -49,6 +49,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.arthax.domain.model.CallMode
 import com.example.arthax.domain.model.Lead
@@ -73,7 +75,13 @@ fun LeadsScreen(
     val context = LocalContext.current
     val listState = rememberLazyListState()
 
-    LaunchedEffect(Unit) { viewModel.refreshEnvironment() }
+    // On every return to the screen, not just the first composition: permissions and the
+    // folder grant can be changed in system settings while the app is away, and the lead
+    // list itself is edited in the CRM by other people all day.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        viewModel.refreshEnvironment()
+        viewModel.refreshOnReturn()
+    }
 
     // Fetch the next page slightly before the rep reaches the bottom, so the list keeps
     // moving instead of stalling on a spinner. derivedStateOf keeps this from recomposing

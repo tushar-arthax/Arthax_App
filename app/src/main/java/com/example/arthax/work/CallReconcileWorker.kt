@@ -7,9 +7,11 @@ import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
+import kotlinx.coroutines.CancellationException
 import com.example.arthax.call.CallLogReconciler
 import com.example.arthax.data.repository.CallSyncRepository
 import com.example.arthax.data.local.store.LeadLookupCache
+import com.example.arthax.data.local.store.SeenCallStore
 import com.example.arthax.notification.AppNotifications
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
@@ -28,6 +30,7 @@ class CallReconcileWorker @AssistedInject constructor(
     private val reconciler: CallLogReconciler,
     private val syncRepository: CallSyncRepository,
     private val lookupCache: LeadLookupCache,
+    private val seenCalls: SeenCallStore,
     private val notifications: AppNotifications,
 ) : CoroutineWorker(appContext, params) {
 
@@ -50,11 +53,21 @@ class CallReconcileWorker @AssistedInject constructor(
     override suspend fun doWork(): Result {
         // Both stores are file-backed and this may be a brand new process.
         lookupCache.load()
+        seenCalls.load()
         syncRepository.load()
 
         val reason = inputData.getString(KEY_REASON) ?: "scheduled check"
-        reconciler.reconcile(reason)
-        return Result.success()
+
+        return try {
+            reconciler.reconcile(reason)
+            Result.success()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            // A safety net that dies quietly is no safety net. Retry rather than leaving the
+            // watermark parked with unprocessed calls sitting above it.
+            Result.retry()
+        }
     }
 
     companion object {

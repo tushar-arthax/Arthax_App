@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -113,6 +114,9 @@ class OnboardingViewModel @Inject constructor(
                 _state.update { it.copy(folderUri = uri.toString(), folderDisplayName = name, folderError = error) }
                 logger.success(LogStage.SETUP, "Recordings folder set to ${name ?: uri}")
             }.onFailure { t ->
+                // A cancelled screen is not a broken folder; reporting it as one would leave
+                // "Job was cancelled" sitting where a real reason belongs.
+                if (t is CancellationException) throw t
                 val message = t.message ?: "Could not use that folder"
                 _state.update { it.copy(folderError = message) }
                 logger.error(LogStage.SETUP, "Could not use the selected folder", detail = message)

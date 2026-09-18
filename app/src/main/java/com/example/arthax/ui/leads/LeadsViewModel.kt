@@ -93,6 +93,9 @@ class LeadsViewModel @Inject constructor(
      */
     private var loadJob: Job? = null
 
+    /** When the list last came back from the server, for the staleness check on resume. */
+    private var lastLoadedAt = 0L
+
     init {
         observePendingCalls()
         observeQuery()
@@ -129,6 +132,20 @@ class LeadsViewModel @Inject constructor(
 
     /** Reloads page one, keeping the current rows visible while it runs. */
     fun refresh() = load(reset = true, showSpinner = false)
+
+    /**
+     * Brings the list up to date when the rep comes back to the screen.
+     *
+     * Leads are added, edited and deleted in the CRM by other people all day, so a list left
+     * sitting on screen goes stale the moment the phone is put down. This reloads quietly —
+     * the current rows stay visible — and only when the last load is old enough to be worth
+     * a request, so flicking between tabs does not fire one every time.
+     */
+    fun refreshOnReturn() {
+        if (_state.value.isLoading || _state.value.isRefreshing) return
+        if (System.currentTimeMillis() - lastLoadedAt < STALE_AFTER_MILLIS) return
+        refresh()
+    }
 
     /**
      * Called as the list approaches its end. Safe to call repeatedly — it is a no-op while a
@@ -168,6 +185,7 @@ class LeadsViewModel @Inject constructor(
                     if (searchAtRequestTime != query.value) return@launch
 
                     nextSkip = page.nextSkip
+                    lastLoadedAt = System.currentTimeMillis()
 
                     _state.update { previous ->
                         // De-duplicate on id: the server can return an overlapping row if a
@@ -266,5 +284,8 @@ class LeadsViewModel @Inject constructor(
 
     private companion object {
         const val SEARCH_DEBOUNCE_MILLIS = 350L
+
+        /** Short enough to feel live, long enough that tab-flicking is not a request each time. */
+        const val STALE_AFTER_MILLIS = 15_000L
     }
 }

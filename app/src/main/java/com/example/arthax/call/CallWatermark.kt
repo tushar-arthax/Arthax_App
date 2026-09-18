@@ -19,4 +19,34 @@ object CallWatermark {
      */
     fun initial(newestExistingCallAt: Long, now: Long): Long =
         if (newestExistingCallAt > 0) newestExistingCallAt else now
+
+    /**
+     * Whether a call-log row is one this app has already turned into CRM activity.
+     *
+     * A row is identified by its id *and* the timestamp it carried when we saw it. The id
+     * alone is not an identity: Xiaomi and some other builds record a repeat unanswered call
+     * to the same number by re-dating the row that is already there rather than inserting a
+     * new one, so an id-only check reported "already done" and every call after the first in
+     * such a run was dropped.
+     *
+     * @param storedDate zero for rows queued before the date was recorded. Those fall back
+     *   to matching on the id alone, so upgrading cannot re-post calls already delivered.
+     */
+    fun isSameCall(storedId: Long, storedDate: Long, rowId: Long, rowDate: Long): Boolean =
+        storedId == rowId && (storedDate == 0L || storedDate == rowDate)
+
+    /**
+     * Whether a row is one this app has yet to look at. Mirrors the selection the call log
+     * is queried with — `_id > sinceId OR date > sinceDate` — and exists so the reasoning
+     * behind that selection is executable rather than only asserted in a comment.
+     *
+     * Both halves earn their place:
+     *  - **id** catches a call that began before the previous one had ended. Rows are written
+     *    at hang-up but stamped with the start, so that row carries an *earlier* date than
+     *    one already processed and a date-only watermark would never return it.
+     *  - **date** catches a row an OEM re-dated in place to record a repeat call, which
+     *    keeps its original id and so slips under an id-only watermark.
+     */
+    fun isUnseen(rowId: Long, rowDate: Long, sinceId: Long, sinceDate: Long): Boolean =
+        rowId > sinceId || rowDate > sinceDate
 }

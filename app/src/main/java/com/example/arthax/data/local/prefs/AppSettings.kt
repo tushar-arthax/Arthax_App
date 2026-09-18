@@ -57,6 +57,38 @@ class AppSettings(private val context: Context) {
     }
 
     /**
+     * Highest call-log row id already turned into CRM activity.
+     *
+     * The companion to [lastProcessedCallAt], and not redundant. Call log rows are written
+     * when a call ends but stamped with when it began, so the two orders disagree the moment
+     * calls overlap — and a call that began before the previous one ended sits below the
+     * timestamp watermark and would never be looked at again. Row ids only go up.
+     *
+     * Zero means "not armed yet"; the reconciler anchors it rather than sweeping the phone's
+     * whole call history.
+     */
+    val lastProcessedCallId: Flow<Long> = context.dataStore.data.map { it[KEY_LAST_CALL_ID] ?: 0L }
+
+    suspend fun setLastProcessedCallId(id: Long) = context.dataStore.edit { p ->
+        p[KEY_LAST_CALL_ID] = id
+    }
+
+    /**
+     * The oldest call this install may ever look at.
+     *
+     * The reconcile re-reads a trailing window of the call log rather than trusting the
+     * watermark alone, because rows can arrive late or out of order and a watermark that has
+     * moved past them would never look again. This is the hard floor under that window: it
+     * is set once, and it is what stops the widened read from sweeping up the phone's call
+     * history and posting weeks of old calls as though they had all just happened.
+     */
+    val callTrackingFloor: Flow<Long> = context.dataStore.data.map { it[KEY_TRACKING_FLOOR] ?: 0L }
+
+    suspend fun setCallTrackingFloor(millis: Long) = context.dataStore.edit { p ->
+        p[KEY_TRACKING_FLOOR] = millis
+    }
+
+    /**
      * Whether the missing-call-log-permission warning has already been written.
      *
      * Without this the reconcile would repeat it on every run, including the fifteen-minute
@@ -77,7 +109,11 @@ class AppSettings(private val context: Context) {
     }
 
     /** Cleared on sign-out so the next rep does not inherit this one's position. */
-    suspend fun resetCallWatermark() = context.dataStore.edit { p -> p.remove(KEY_LAST_CALL_AT) }
+    suspend fun resetCallWatermark() = context.dataStore.edit { p ->
+        p.remove(KEY_LAST_CALL_AT)
+        p.remove(KEY_LAST_CALL_ID)
+        p.remove(KEY_TRACKING_FLOOR)
+    }
 
     suspend fun setRecordingsTreeUri(uri: String?) = context.dataStore.edit { p ->
         if (uri == null) p.remove(KEY_TREE_URI) else p[KEY_TREE_URI] = uri
@@ -111,6 +147,8 @@ class AppSettings(private val context: Context) {
         private val KEY_BATTERY_PROMPT = booleanPreferencesKey("battery_prompt_shown")
         private val KEY_AUTOSTART_PROMPT = booleanPreferencesKey("autostart_prompt_shown")
         private val KEY_LAST_CALL_AT = longPreferencesKey("last_processed_call_at")
+        private val KEY_LAST_CALL_ID = longPreferencesKey("last_processed_call_id")
+        private val KEY_TRACKING_FLOOR = longPreferencesKey("call_tracking_floor")
         private val KEY_CALL_LOG_WARNED = booleanPreferencesKey("call_log_warned")
         private val KEY_CALL_LOG_REQUESTED = booleanPreferencesKey("call_log_requested")
 

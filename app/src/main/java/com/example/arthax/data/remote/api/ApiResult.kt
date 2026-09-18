@@ -1,5 +1,8 @@
 package com.example.arthax.data.remote.api
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import org.json.JSONArray
 import org.json.JSONObject
 import retrofit2.Response
@@ -43,6 +46,28 @@ sealed interface ApiResult<out T> {
             override val detail: String? = null,
         ) : Failure(message, detail, retryable = false)
 
+        /**
+         * The server asked us to slow down or timed the request out — 429, 408, 425.
+         *
+         * Separate from [Rejected] because the difference decides whether a call survives.
+         * These used to fall into the same bucket as a malformed payload, so the very first
+         * one marked the call permanently failed and nothing ever sent it again.
+         *
+         * It matched the symptom exactly. A connected call spends up to a minute hunting for
+         * its recording before posting, so those requests are naturally spaced out and always
+         * got through. Unanswered calls have nothing to hunt for: a run of redials, or a
+         * backlog released the moment the phone came back online, arrives as a burst — and
+         * whichever ones the server pushed back on were thrown away rather than retried.
+         *
+         * @param retryAfterSeconds the server's own `Retry-After`, when it sent one.
+         */
+        data class Throttled(
+            val code: Int,
+            val retryAfterSeconds: Int? = null,
+            override val message: String = "Server asked us to slow down",
+            override val detail: String? = null,
+        ) : Failure(message, detail, retryable = true)
+
         /** 5xx that looks transient — the server may recover. */
         data class Server(
             val code: Int,
@@ -70,7 +95,20 @@ sealed interface ApiResult<out T> {
 
 /**
  * Wraps a Retrofit call, mapping transport and HTTP failures onto [ApiResult.Failure].
- * Never throws; callers always get something they can render.
+ *
+ * Everything except cancellation is turned into a value the caller can render. Cancellation
+ * is rethrown, and that exception is load-bearing: a cancelled coroutine is not a failed
+ * request, it is a request nobody is waiting for any more.
+ *
+ * Treating it as a failure caused two visible bugs. On the leads screen every pull to
+ * refresh, every search keystroke and every scroll that overtook an in-flight page cancels
+ * the previous job - and the cancelled job then reported "Something went wrong /
+ * StandaloneCoroutine was cancelled" with a Try again button, over and over. In the sync
+ * worker the same exception was classified as a permanent, non-retryable error, so a call
+ * whose worker the system merely stopped was marked failed and never reached the CRM.
+ *
+ * It is also why the errors only appeared with a working connection: offline, the request
+ * fails immediately with a real network error before anything gets the chance to cancel it.
  */
 suspend fun <T : Any> safeApiCall(block: suspend () -> Response<T>): ApiResult<T> = try {
     val response = block()
@@ -94,6 +132,22 @@ suspend fun <T : Any> safeApiCall(block: suspend () -> Response<T>): ApiResult<T
             val detail = response.errorDetail()
             ApiResult.Failure.Unauthorized(
                 message = detail ?: "Session expired, please sign in again",
+                detail = detail,
+            )
+        }
+
+        // Checked before the general 4xx branch below, which treats a rejection as final.
+        // "Too many requests" and "you took too long" are the opposite of final.
+        code == 429 || code == 408 || code == 425 -> {
+            val detail = response.errorDetail()
+            ApiResult.Failure.Throttled(
+                code = code,
+                retryAfterSeconds = response.retryAfterSeconds(),
+                message = if (code == 429) {
+                    "Server asked us to slow down, will retry"
+                } else {
+                    "Request timed out, will retry"
+                },
                 detail = detail,
             )
         }
@@ -123,15 +177,35 @@ suspend fun <T : Any> safeApiCall(block: suspend () -> Response<T>): ApiResult<T
             )
         }
     }
+} catch (e: CancellationException) {
+    // Never swallowed, never mapped to a Failure - see the note above.
+    throw e
 } catch (e: UnknownHostException) {
     ApiResult.Failure.Network("No internet connection", e.describe())
 } catch (e: SocketTimeoutException) {
     ApiResult.Failure.Network("Connection timed out", e.describe())
 } catch (e: IOException) {
+    // OkHttp reports a cancelled call as IOException("Canceled") when the cancel lands
+    // between the request going out and the callback returning, so the coroutine has to be
+    // consulted rather than the exception type alone. Rethrows if we were cancelled.
+    currentCoroutineContext().ensureActive()
     ApiResult.Failure.Network("Network unavailable", e.describe())
 } catch (e: Exception) {
+    currentCoroutineContext().ensureActive()
     ApiResult.Failure.Unexpected("Something went wrong", e.describe())
 }
+
+/**
+ * The server's own `Retry-After`, in seconds, when it sent one we can understand.
+ *
+ * Only the delta-seconds form is read. The HTTP-date form is rare in practice and a wrong
+ * guess would be worse than the backoff we already apply.
+ */
+private fun Response<*>.retryAfterSeconds(): Int? =
+    headers()["Retry-After"]?.trim()?.toIntOrNull()?.takeIf { it in 1..MAX_RETRY_AFTER_SECONDS }
+
+/** An hour. Beyond that the header is nonsense and our own backoff is the better guide. */
+private const val MAX_RETRY_AFTER_SECONDS = 3_600
 
 /** Markers that turn a 5xx into a permanent rejection rather than a retry. */
 private val PERMANENT_5XX_MARKERS = listOf("ffmpeg", "upload failed", "invalid data found")

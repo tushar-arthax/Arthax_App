@@ -2,11 +2,16 @@ package com.example.arthax.data
 
 import com.example.arthax.data.remote.api.ApiResult
 import com.example.arthax.data.remote.api.safeApiCall
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import retrofit2.Response
@@ -23,6 +28,50 @@ class ApiResultTest {
 
     private fun error(code: Int, json: String) =
         Response.error<String>(code, json.toResponseBody("application/json".toMediaTypeOrNull()))
+
+    /**
+     * Cancellation is not a failed request, it is a request nobody is waiting for. Mapping
+     * it onto a Failure produced two real bugs: "Something went wrong / StandaloneCoroutine
+     * was cancelled" with a Try again button on the leads screen every time a refresh or a
+     * keystroke replaced an in-flight page, and calls marked permanently failed in the sync
+     * worker whenever the system merely stopped it mid-upload.
+     */
+    @Test
+    fun `cancellation is rethrown, never reported as a failure`() = runTest {
+        val thrown = runCatching {
+            safeApiCall<String> { throw CancellationException("StandaloneCoroutine was cancelled") }
+        }.exceptionOrNull()
+
+        assertTrue("a cancelled request is not a failed one", thrown is CancellationException)
+    }
+
+    @Test
+    fun `an IO error raised after cancellation is rethrown, not reported`() = runTest {
+        // OkHttp reports a cancelled call as IOException("Canceled"), so the exception type
+        // alone cannot tell the two apart - the coroutine's own state has to decide.
+        var reported: ApiResult<String>? = null
+        var thrown: Throwable? = null
+
+        val job = launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                reported = safeApiCall {
+                    try {
+                        awaitCancellation()
+                    } catch (e: CancellationException) {
+                        throw IOException("Canceled")
+                    }
+                }
+            } catch (t: Throwable) {
+                thrown = t
+            }
+        }
+
+        job.cancel()
+        job.join()
+
+        assertNull("a cancelled request must never produce a Failure", reported)
+        assertTrue(thrown is CancellationException)
+    }
 
     @Test
     fun `successful response with a body is a Success`() = runTest {
@@ -44,6 +93,43 @@ class ApiResultTest {
     fun `timeout and generic IO are retryable`() = runTest {
         assertTrue((safeApiCall<String> { throw SocketTimeoutException() } as ApiResult.Failure).retryable)
         assertTrue((safeApiCall<String> { throw IOException("socket closed") } as ApiResult.Failure).retryable)
+    }
+
+    /**
+     * "Too many requests" is the opposite of a permanent rejection, and treating it as one
+     * lost calls. Every 4xx bar 401 used to be final, so the first push-back marked a call
+     * failed and nothing ever sent it again.
+     *
+     * It only ever bit unanswered calls, which is what made it look like a call-log problem.
+     * A connected call spends up to a minute hunting for its recording before posting, so
+     * those requests are spaced out on their own. Unanswered calls have nothing to hunt for:
+     * a run of redials, or a backlog released when the phone comes back online, arrives as a
+     * burst, and whichever ones the server pushed back on were discarded.
+     */
+    @Test
+    fun `too many requests is retryable, not a rejection`() = runTest {
+        val result = safeApiCall<String> { error(429, """{"detail":"Rate limit exceeded"}""") }
+
+        assertTrue(result is ApiResult.Failure.Throttled)
+        assertTrue("a call must never be dropped for this", (result as ApiResult.Failure).retryable)
+        assertEquals("Rate limit exceeded", result.detail)
+    }
+
+    @Test
+    fun `a request timeout is retryable`() = runTest {
+        val result = safeApiCall<String> { error(408, """{"detail":"Request timeout"}""") }
+
+        assertTrue(result is ApiResult.Failure.Throttled)
+        assertTrue((result as ApiResult.Failure).retryable)
+    }
+
+    @Test
+    fun `a validation error stays permanent`() = runTest {
+        // The distinction that matters: pushing back is transient, a malformed payload is not.
+        val result = safeApiCall<String> { error(422, """{"detail":"lead_id: Field required"}""") }
+
+        assertTrue(result is ApiResult.Failure.Rejected)
+        assertFalse((result as ApiResult.Failure).retryable)
     }
 
     @Test

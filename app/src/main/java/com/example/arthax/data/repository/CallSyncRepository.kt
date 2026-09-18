@@ -11,6 +11,7 @@ import com.example.arthax.data.remote.dto.CallCreateRequest
 import com.example.arthax.domain.model.CallOutcome
 import com.example.arthax.domain.model.CallStatus
 import com.example.arthax.domain.model.LogStage
+import com.example.arthax.notification.AppNotifications
 import com.example.arthax.recording.RecordingStorage
 import kotlinx.coroutines.flow.StateFlow
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -33,6 +34,7 @@ class CallSyncRepository @Inject constructor(
     private val api: ArthaxApi,
     private val store: PendingCallStore,
     private val storage: RecordingStorage,
+    private val notifications: AppNotifications,
     private val logger: EventLogger,
 ) {
 
@@ -62,7 +64,8 @@ class CallSyncRepository @Inject constructor(
 
     fun existsForSource(uri: String): Boolean = store.existsForSource(uri)
 
-    fun existsForCallLogId(callLogId: Long): Boolean = store.existsForCallLogId(callLogId)
+    fun existsForCall(callLogId: Long, callLogDate: Long): Boolean =
+        store.existsForCall(callLogId, callLogDate)
 
     suspend fun enqueue(call: PendingCall) {
         store.upsert(call)
@@ -240,6 +243,9 @@ class CallSyncRepository @Inject constructor(
                 // The server's own words — usually the fastest route to the actual cause.
                 detail = failure.detail,
             )
+            // Raised here rather than in the worker, so it appears exactly once no matter
+            // which path gave up - the immediate send from the watcher, or a later retry.
+            notifications.notifyUploadFailed(call.leadName, reason)
             Outcome.GaveUp(reason)
         }
     }
@@ -252,6 +258,7 @@ class CallSyncRepository @Inject constructor(
             leadId = call.leadId,
             leadName = call.leadName,
         )
+        notifications.notifyUploadFailed(call.leadName, reason)
         return Outcome.GaveUp(reason)
     }
 

@@ -14,9 +14,13 @@ import javax.inject.Singleton
 /**
  * Answers "does this phone number belong to one of our leads?".
  *
- * Cache first, server second. The server is asked with the lead-search endpoint one number
- * at a time, which is what lets this work against a CRM of any size — nothing is ever bulk
- * downloaded, and the cost of a call is at most one small request.
+ * The CRM is asked every single time, and that is the point. The answer is live: a lead
+ * added a minute before the call is found, and a lead deleted or reassigned in the CRM stops
+ * being matched from that moment on. Nothing is ever bulk downloaded — the lead-search
+ * endpoint is asked about one number — so this costs one small request per call and behaves
+ * identically against a CRM of a hundred leads or ten million.
+ *
+ * The local list is a fallback for one situation only: the CRM could not be reached at all.
  */
 @Singleton
 class LeadResolver @Inject constructor(
@@ -29,7 +33,13 @@ class LeadResolver @Inject constructor(
     sealed interface Resolution {
         data class Lead(val id: String, val name: String, val fromCache: Boolean) : Resolution
 
-        /** Confirmed not a lead. The call is the rep's own business and is dropped. */
+        /**
+         * The CRM says this number is not a lead. The call is the rep's own business: no
+         * recording is touched, nothing is uploaded, and the number is never written down.
+         *
+         * Only ever a live answer. Nothing is dropped on the strength of something
+         * remembered, because a stranger an hour ago may be a lead now.
+         */
         data object NotALead : Resolution
 
         /**
@@ -42,17 +52,8 @@ class LeadResolver @Inject constructor(
 
     suspend fun resolve(rawNumber: String?): Resolution {
         val key = PhoneNumbers.matchKey(rawNumber)
+        // Withheld, unknown or malformed numbers cannot belong to anyone.
         if (key.isEmpty()) return Resolution.NotALead
-
-        val cached = cache.peek(rawNumber)
-        when (cached.verdict) {
-            LeadLookupCache.Verdict.LEAD ->
-                return Resolution.Lead(cached.leadId!!, cached.leadName.orEmpty(), fromCache = true)
-
-            LeadLookupCache.Verdict.NOT_A_LEAD -> return Resolution.NotALead
-
-            LeadLookupCache.Verdict.UNKNOWN -> Unit // fall through and ask the server
-        }
 
         if (!tokenStore.isLoggedIn) return Resolution.Unavailable("not signed in")
 
@@ -74,7 +75,10 @@ class LeadResolver @Inject constructor(
                 val match = pickMatch(result.data.items, key)
 
                 if (match == null) {
-                    cache.rememberNotALead(rawNumber)
+                    // A live "no", and it overrides anything remembered. This is what makes a
+                    // lead deleted or reassigned in the CRM stop being matched at once,
+                    // rather than going on collecting calls from the offline list.
+                    cache.forget(rawNumber)
                     Resolution.NotALead
                 } else {
                     val name = match.name.trim().ifBlank { "Unnamed lead" }
@@ -83,18 +87,47 @@ class LeadResolver @Inject constructor(
                 }
             }
 
-            is ApiResult.Failure -> {
-                // Not cached: an outage must not be remembered as "not a lead" and cause the
-                // call to be dropped for the next twelve hours.
-                logger.warn(
-                    LogStage.SYNC,
-                    "Could not check whether a call was to a lead: ${result.message}",
-                    detail = "The call is kept and will be checked again. " +
-                        "Reason: ${result.detail ?: result.message}",
-                )
-                Resolution.Unavailable(result.message)
-            }
+            is ApiResult.Failure -> fallBack(rawNumber, result)
         }
+    }
+
+    /**
+     * What to do when the CRM could not be asked at all.
+     *
+     * A number already known to be a lead is still treated as one, because the recording is
+     * the part that cannot be recovered later — OEM recorders prune their own folders, so
+     * capturing the audio now against the last known lead beats waiting for a network and
+     * finding the file gone. The call itself is still delivered to the CRM afterwards.
+     *
+     * Everything else is held, never guessed at. An outage must never look like "not a lead",
+     * or a genuine call would be dropped the moment a rep stepped into a lift.
+     */
+    private fun fallBack(rawNumber: String?, failure: ApiResult.Failure): Resolution {
+        val remembered = cache.peek(rawNumber)
+
+        if (remembered.verdict == LeadLookupCache.Verdict.LEAD) {
+            logger.warn(
+                LogStage.SYNC,
+                "Matched a call from the offline list — the CRM could not be reached",
+                leadId = remembered.leadId,
+                leadName = remembered.leadName,
+                detail = "The recording is being captured now rather than risked. " +
+                    "Reason: ${failure.detail ?: failure.message}",
+            )
+            return Resolution.Lead(
+                id = remembered.leadId!!,
+                name = remembered.leadName.orEmpty(),
+                fromCache = true,
+            )
+        }
+
+        logger.warn(
+            LogStage.SYNC,
+            "Could not check whether a call was to a lead: ${failure.message}",
+            detail = "The call is kept and will be checked again as soon as there is a " +
+                "connection. Reason: ${failure.detail ?: failure.message}",
+        )
+        return Resolution.Unavailable(failure.message)
     }
 
     /**

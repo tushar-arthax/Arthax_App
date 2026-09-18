@@ -16,11 +16,14 @@ import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** One remembered answer to "does this number belong to a lead?". */
+/** One number that was a lead the last time the CRM was asked. */
 @JsonClass(generateAdapter = true)
 data class CachedLookup(
     @Json(name = "k") val key: String,
-    /** Null means a confirmed non-lead — a negative result worth remembering. */
+    /**
+     * Nullable only because older files on existing installs recorded confirmed non-leads
+     * this way. Those rows are dropped on load; nothing writes a null id any more.
+     */
     @Json(name = "i") val leadId: String? = null,
     @Json(name = "n") val leadName: String? = null,
     @Json(name = "t") val resolvedAt: Long = System.currentTimeMillis(),
@@ -34,20 +37,23 @@ internal data class LookupCacheFile(
 )
 
 /**
- * A small, bounded memory of which numbers are leads.
+ * The last known answer to "does this number belong to a lead?", kept for when the CRM
+ * cannot be reached.
  *
- * This deliberately does **not** hold the lead book. An org with a million leads cannot have
- * its directory shipped to a phone, and trying would be slow to sync, heavy on storage and
- * stale the moment it finished. Instead the server answers the question one number at a
- * time, and this remembers the answers so the same number is never asked about twice.
+ * It is **not** consulted while there is a connection. Every call is matched against the
+ * live CRM, so a lead added a minute ago is found on the very next call and a lead deleted
+ * in the CRM stops being matched immediately. That is the whole point: a remembered answer
+ * is a wrong answer waiting to happen, and the two ways it went wrong in the field were
+ * both silent — a number called before it was added stayed invisible for hours afterwards,
+ * and a deleted lead would have kept collecting calls.
  *
- * The working set is what matters: a rep calls the same few hundred people, so a cache of a
- * thousand entries covers essentially every call after the first, no matter how large the
- * CRM is behind it.
+ * What is left is a small, bounded fallback for the one case where a stale answer beats no
+ * answer at all: the phone is offline when a call ends. A recording is perishable — OEM
+ * recorders prune their own folders — so capturing it against the last known lead is worth
+ * far more than waiting for a network that may not come back before the file is gone.
  *
- * Negative results are cached too, and matter more than the positive ones — without them
- * every call to the rep's spouse, bank or courier would hit the API again. They expire
- * sooner, because a number that is not a lead today can be imported as one tomorrow.
+ * Non-leads are never remembered. There is nothing to preserve: with no connection the call
+ * is held and re-checked rather than being dropped on a guess.
  */
 @Singleton
 class LeadLookupCache @Inject constructor(
@@ -55,7 +61,7 @@ class LeadLookupCache @Inject constructor(
     moshi: Moshi,
 ) {
 
-    enum class Verdict { LEAD, NOT_A_LEAD, UNKNOWN }
+    enum class Verdict { LEAD, UNKNOWN }
 
     data class Hit(val verdict: Verdict, val leadId: String? = null, val leadName: String? = null)
 
@@ -74,7 +80,7 @@ class LeadLookupCache @Inject constructor(
 
     val size: Int get() = synchronized(entries) { entries.size }
 
-    val leadCount: Int get() = synchronized(entries) { entries.values.count { it.isLead } }
+    val leadCount: Int get() = size
 
     suspend fun load() = withContext(Dispatchers.IO) {
         mutex.withLock {
@@ -87,15 +93,17 @@ class LeadLookupCache @Inject constructor(
 
             synchronized(entries) {
                 entries.clear()
-                loaded.forEach { entries[it.key] = it }
+                // Leads only. A file written by an older build may still hold remembered
+                // non-leads, and those must not come back to life.
+                loaded.filter { it.isLead }.forEach { entries[it.key] = it }
             }
         }
     }
 
     /**
-     * What we already know about this number, without touching the network.
+     * The last known answer for this number, without touching the network.
      *
-     * [Verdict.UNKNOWN] covers both "never seen" and "seen too long ago to trust", so the
+     * [Verdict.UNKNOWN] covers "never seen" and "seen too long ago to trust" alike, so the
      * caller treats a stale answer exactly like no answer.
      */
     fun peek(rawNumber: String?): Hit {
@@ -103,43 +111,37 @@ class LeadLookupCache @Inject constructor(
         if (key.isEmpty()) return Hit(Verdict.UNKNOWN)
 
         val entry = synchronized(entries) { entries[key] } ?: return Hit(Verdict.UNKNOWN)
-
-        val age = System.currentTimeMillis() - entry.resolvedAt
-        val ttl = if (entry.isLead) POSITIVE_TTL_MILLIS else NEGATIVE_TTL_MILLIS
-        if (age > ttl) return Hit(Verdict.UNKNOWN)
-
-        return if (entry.isLead) {
-            Hit(Verdict.LEAD, entry.leadId, entry.leadName)
-        } else {
-            Hit(Verdict.NOT_A_LEAD)
+        if (!entry.isLead) return Hit(Verdict.UNKNOWN)
+        if (System.currentTimeMillis() - entry.resolvedAt > FALLBACK_TTL_MILLIS) {
+            return Hit(Verdict.UNKNOWN)
         }
+
+        return Hit(Verdict.LEAD, entry.leadId, entry.leadName)
     }
 
-    suspend fun rememberLead(rawNumber: String?, leadId: String, leadName: String) =
-        put(rawNumber, CachedLookup(PhoneNumbers.matchKey(rawNumber), leadId, leadName))
-
-    suspend fun rememberNotALead(rawNumber: String?) =
-        put(rawNumber, CachedLookup(PhoneNumbers.matchKey(rawNumber)))
-
-    /**
-     * Seeds the cache from leads already on screen.
-     *
-     * Free accuracy: the rep scrolls their list, so by the time they call anyone the answer
-     * is usually already here and the call needs no network at all.
-     */
-    suspend fun seed(leads: List<Pair<String, Pair<String, String>>>) {
-        if (leads.isEmpty()) return
+    suspend fun rememberLead(rawNumber: String?, leadId: String, leadName: String) {
+        val key = PhoneNumbers.matchKey(rawNumber)
+        if (key.isEmpty()) return
         mutex.withLock {
-            synchronized(entries) {
-                leads.forEach { (number, lead) ->
-                    val key = PhoneNumbers.matchKey(number)
-                    if (key.isNotEmpty()) {
-                        entries[key] = CachedLookup(key, lead.first, lead.second)
-                    }
-                }
-            }
+            synchronized(entries) { entries[key] = CachedLookup(key, leadId, leadName) }
         }
         persist()
+    }
+
+    /**
+     * Drops whatever was remembered for this number.
+     *
+     * Called the moment the CRM says a number is not a lead, so a lead that has been deleted
+     * or reassigned cannot go on being matched from the offline fallback.
+     */
+    suspend fun forget(rawNumber: String?) {
+        val key = PhoneNumbers.matchKey(rawNumber)
+        if (key.isEmpty()) return
+
+        val removed = mutex.withLock {
+            synchronized(entries) { entries.remove(key) != null }
+        }
+        if (removed) persist()
     }
 
     suspend fun clear() = withContext(Dispatchers.IO) {
@@ -148,13 +150,6 @@ class LeadLookupCache @Inject constructor(
             runCatching { file.delete() }
             Unit
         }
-    }
-
-    private suspend fun put(rawNumber: String?, entry: CachedLookup) {
-        val key = entry.key
-        if (key.isEmpty()) return
-        mutex.withLock { synchronized(entries) { entries[key] = entry } }
-        persist()
     }
 
     private suspend fun persist() = withContext(Dispatchers.IO) {
@@ -176,10 +171,11 @@ class LeadLookupCache @Inject constructor(
         /** ~1000 numbers is far more than a rep's real working set, at roughly 80 KB. */
         const val MAX_ENTRIES = 1_000
 
-        /** A lead stays a lead; re-checked weekly in case it was reassigned or deleted. */
-        val POSITIVE_TTL_MILLIS = 7L * 24 * 60 * 60 * 1000
-
-        /** Shorter, because today's stranger can be tomorrow's imported lead. */
-        val NEGATIVE_TTL_MILLIS = 12L * 60 * 60 * 1000
+        /**
+         * How long an offline fallback stays usable. A week: long enough to cover any
+         * realistic stretch without signal, and it is only ever reached when the CRM itself
+         * could not be asked.
+         */
+        val FALLBACK_TTL_MILLIS = 7L * 24 * 60 * 60 * 1000
     }
 }

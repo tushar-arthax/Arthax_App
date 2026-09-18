@@ -157,18 +157,19 @@ fun SettingsScreen(
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                text = "Incoming and outgoing, whether or not Arthax is open. Each number is " +
-                    "looked up in your CRM once and then remembered, so nothing is downloaded " +
-                    "in bulk. Calls to numbers that are not leads are ignored completely - no " +
-                    "recording is touched and nothing is uploaded.",
+                text = "Incoming and outgoing, whether or not Arthax is open. Every call is " +
+                    "checked against your CRM as it happens, so a lead added a minute ago is " +
+                    "matched and a lead removed stops being matched straight away - nothing " +
+                    "is downloaded in bulk. Calls to numbers that are not leads are ignored " +
+                    "completely: no recording is touched and nothing is uploaded.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             if (state.cachedLookups > 0) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    text = "${state.knownLeadNumbers} lead number(s) remembered " +
-                        "of ${state.cachedLookups} checked",
+                    text = "${state.knownLeadNumbers} lead number(s) saved for matching " +
+                        "while you have no signal",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

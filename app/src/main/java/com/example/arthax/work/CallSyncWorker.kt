@@ -7,6 +7,7 @@ import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
+import kotlinx.coroutines.CancellationException
 import com.example.arthax.data.repository.CallSyncRepository
 import com.example.arthax.notification.AppNotifications
 import dagger.assisted.Assisted
@@ -55,18 +56,29 @@ class CallSyncWorker @AssistedInject constructor(
         // read it yet.
         syncRepository.load()
 
-        val call = syncRepository.queue.value.firstOrNull { it.id == pendingId }
-            ?: return Result.success()
+        // Already delivered and pruned, or discarded by the rep. Nothing left to do.
+        if (syncRepository.queue.value.none { it.id == pendingId }) return Result.success()
 
-        return when (val outcome = syncRepository.sync(pendingId)) {
+        val outcome = try {
+            syncRepository.sync(pendingId)
+        } catch (e: CancellationException) {
+            // The system stopped this worker mid-request. Nothing has gone wrong with the
+            // call: WorkManager reschedules stopped work, and the queue row is untouched.
+            throw e
+        } catch (t: Throwable) {
+            // Anything unexpected is worth another go rather than a dead work entry - the
+            // queue row is still PENDING, so retrying is the only thing that can deliver it.
+            return Result.retry()
+        }
+
+        return when (outcome) {
             CallSyncRepository.Outcome.Done -> Result.success()
 
             is CallSyncRepository.Outcome.Retry -> Result.retry()
 
-            is CallSyncRepository.Outcome.GaveUp -> {
-                notifications.notifyUploadFailed(call.leadName, outcome.reason)
-                Result.success()
-            }
+            // The repository raises the notification, so it appears exactly once whether the
+            // call gave up here or on the immediate send from the watcher.
+            is CallSyncRepository.Outcome.GaveUp -> Result.success()
         }
     }
 

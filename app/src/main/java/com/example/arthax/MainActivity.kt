@@ -28,7 +28,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var tokenStore: SecureTokenStore
 
     /**
-     * Checks for missed calls every time the app comes to the foreground.
+     * Checks for missed calls every time the app comes to the foreground.c
      *
      * The equivalent call in Application.onCreate only runs when the *process* starts, so a
      * process that stayed alive — the normal case — never re-checked. That is why granting

@@ -107,7 +107,10 @@ class WorkScheduler @Inject constructor(
             // KEEP: if this call is already scheduled or running, leave it alone rather than
             // restarting its backoff from zero.
             ExistingWorkPolicy.KEEP,
-            syncRequest(pendingCallId, initialBackoffSeconds = 30),
+            // Ten seconds, WorkManager's floor. A call that the server pushed back on during a
+            // burst should land moments later, not a minute later when the rep has already
+            // looked at the CRM and concluded it was lost.
+            syncRequest(pendingCallId, initialBackoffSeconds = 10),
         )
     }
 

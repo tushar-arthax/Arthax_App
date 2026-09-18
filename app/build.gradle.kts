@@ -58,10 +58,11 @@ android {
             // traces. Release carries the shrinking; the rules were smoke-tested by
             // temporarily enabling them here.
             isMinifyEnabled = false
-            // Point at your staging API here; overridden per-build-type so a debug
-            // build can never accidentally upload recordings to production.
-            buildConfigField("String", "API_BASE_URL", "\"https://staging-api.arthax.ai/\"")
-            buildConfigField("String", "API_ENVIRONMENT", "\"staging\"")
+            // Overridden per-build-type, so the two environments can never be confused at
+            // runtime. Point this back at https://staging-api.arthax.ai/ to keep debug
+            // builds off the live database while developing.
+            buildConfigField("String", "API_BASE_URL", "\"https://api.arthax.ai/\"")
+            buildConfigField("String", "API_ENVIRONMENT", "\"production\"")
         }
         release {
             // Strips unused Compose, Hilt, Retrofit and coroutines code. Rules live in
@@ -73,10 +74,12 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Point release at production the day it exists; staging until then so a
-            // release build is never silently talking to the wrong database.
-            buildConfigField("String", "API_BASE_URL", "\"https://staging-api.arthax.ai/\"")
-            buildConfigField("String", "API_ENVIRONMENT", "\"staging\"")
+            // Production. The label rides along with the URL on purpose: it is shown on the
+            // Settings screen so a rep can tell support which backend they are on, and a
+            // build that says "staging" while talking to the live database is worse than
+            // no label at all.
+            buildConfigField("String", "API_BASE_URL", "\"https://api.arthax.ai/\"")
+            buildConfigField("String", "API_ENVIRONMENT", "\"production\"")
         }
     }
     compileOptions {

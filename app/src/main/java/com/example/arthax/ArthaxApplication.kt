@@ -10,6 +10,7 @@ import com.example.arthax.core.ApiConfig
 import com.example.arthax.core.CrashRecorder
 import com.example.arthax.data.local.prefs.SecureTokenStore
 import com.example.arthax.data.local.store.LeadLookupCache
+import com.example.arthax.data.local.store.SeenCallStore
 import com.example.arthax.data.repository.CallSyncRepository
 import com.example.arthax.data.repository.EventLogger
 import com.example.arthax.di.ApplicationScope
@@ -32,6 +33,8 @@ class ArthaxApplication : Application(), Configuration.Provider {
     @Inject lateinit var syncRepository: CallSyncRepository
 
     @Inject lateinit var lookupCache: LeadLookupCache
+
+    @Inject lateinit var seenCalls: SeenCallStore
 
     @Inject lateinit var recordingStorage: RecordingStorage
 
@@ -80,6 +83,7 @@ class ArthaxApplication : Application(), Configuration.Provider {
             logger.load()
             syncRepository.load()
             lookupCache.load()
+            seenCalls.load()
 
             logger.info(
                 LogStage.SETUP,

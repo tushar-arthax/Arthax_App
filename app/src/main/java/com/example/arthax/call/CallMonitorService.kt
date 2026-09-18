@@ -1,7 +1,9 @@
 package com.example.arthax.call
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.database.ContentObserver
 import android.net.Uri
@@ -9,20 +11,27 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
+import android.telephony.PhoneStateListener
+import android.telephony.TelephonyCallback
+import android.telephony.TelephonyManager
 import android.provider.CallLog
 import android.util.Log
+import androidx.annotation.RequiresApi
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.example.arthax.data.local.prefs.SecureTokenStore
 import com.example.arthax.data.repository.EventLogger
 import com.example.arthax.domain.model.LogStage
 import com.example.arthax.notification.AppNotifications
+import com.example.arthax.work.WorkScheduler
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -59,26 +68,165 @@ class CallMonitorService : android.app.Service() {
     private val handler = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    /** One reconcile at a time; a second trigger while one runs is folded into the next. */
-    private var running: Job? = null
-    private var rerunRequested = false
+    /** One reconcile at a time, with no way for a trigger to be dropped. See [ReconcileGate]. */
+    private val gate = ReconcileGate()
     private var observerRegistered = false
+
+    /** When the run of call-log changes we are currently waiting out began. */
+    private var settlingSince = 0L
+
+    /**
+     * A short run of re-checks after every hang-up — the part that makes detection real time
+     * on phones whose call log does not announce itself promptly.
+     *
+     * The call-log notification this service waits on is not a guarantee. Samsung routes its
+     * call history through its own logs provider, and the change notification can trail the
+     * call, or arrive once for several calls. When that happened the missing calls were not
+     * lost — the next heartbeat found them — but they turned up minutes late, and a rep who
+     * checked the CRM straight after a run of redials reasonably concluded they were gone.
+     *
+     * So the line state is watched directly, and a hang-up schedules a handful of quick
+     * passes that do not depend on the call log saying anything. Each is one indexed query
+     * and silent in the log when there is nothing new; one of them lands after the row has
+     * been written, however late the phone is in writing it.
+     */
+    private var followUpIndex = 0
+
+    private val followUp = object : Runnable {
+        override fun run() {
+            reconcile(WorkScheduler.REASON_PERIODIC)
+            val previous = FOLLOW_UP_AFTER_MILLIS[followUpIndex]
+            followUpIndex++
+            FOLLOW_UP_AFTER_MILLIS.getOrNull(followUpIndex)?.let { next ->
+                handler.postDelayed(this, next - previous)
+            }
+        }
+    }
+
+    /** Restarts the re-check run; a second hang-up during a run simply begins it again. */
+    private fun armFollowUps() {
+        handler.removeCallbacks(followUp)
+        followUpIndex = 0
+        handler.postDelayed(followUp, FOLLOW_UP_AFTER_MILLIS.first())
+    }
+
+    private var lineWatcher: Any? = null
+
+    /** Android 12 and later. A hang-up is the line returning to idle. */
+    @RequiresApi(Build.VERSION_CODES.S)
+    private inner class LineWatcher : TelephonyCallback(), TelephonyCallback.CallStateListener {
+        override fun onCallStateChanged(state: Int) {
+            // Registration also reports the current state, usually idle. That just runs a
+            // few quiet passes, which is harmless, so it is not filtered out.
+            if (state == TelephonyManager.CALL_STATE_IDLE) handler.post { armFollowUps() }
+        }
+    }
+
+    /** Android 11 and earlier. Delivered on the main thread that created it. */
+    @Suppress("DEPRECATION")
+    private val legacyLineWatcher: PhoneStateListener by lazy {
+        object : PhoneStateListener() {
+            @Deprecated("Deprecated in Java")
+            override fun onCallStateChanged(state: Int, phoneNumber: String?) {
+                if (state == TelephonyManager.CALL_STATE_IDLE) armFollowUps()
+            }
+        }
+    }
+
+    /**
+     * Watches the line directly. A failure here is logged and otherwise ignored: the
+     * call-log observer and the heartbeat still work, just less promptly on some phones.
+     */
+    private fun registerLineWatcher() {
+        if (lineWatcher != null) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        val telephony = getSystemService(TelephonyManager::class.java) ?: return
+
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val watcher = LineWatcher()
+                telephony.registerTelephonyCallback(mainExecutor, watcher)
+                lineWatcher = watcher
+            } else {
+                @Suppress("DEPRECATION")
+                telephony.listen(legacyLineWatcher, PhoneStateListener.LISTEN_CALL_STATE)
+                lineWatcher = legacyLineWatcher
+            }
+        }.onFailure { Log.w(TAG, "Could not watch the line state", it) }
+    }
+
+    private fun unregisterLineWatcher() {
+        val watcher = lineWatcher ?: return
+        val telephony = getSystemService(TelephonyManager::class.java) ?: return
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                (watcher as? TelephonyCallback)?.let(telephony::unregisterTelephonyCallback)
+            } else {
+                @Suppress("DEPRECATION")
+                telephony.listen(legacyLineWatcher, PhoneStateListener.LISTEN_NONE)
+            }
+        }
+        lineWatcher = null
+    }
 
     private val observer = object : ContentObserver(handler) {
         override fun onChange(selfChange: Boolean, uri: Uri?) {
             // The platform writes the row and then updates it with the final duration, so a
-            // short debounce means one reconcile per call, reading a settled duration.
+            // short pause after the last change means one reconcile per call, reading a
+            // settled duration.
+            //
+            // But the pause has a ceiling, and that is not a detail. A plain debounce that
+            // restarts on every change never fires at all while changes keep coming — and
+            // OEM diallers touch the call log constantly during a run of redials, marking
+            // rows read, syncing them, updating presentation. The reconcile was being
+            // starved for exactly as long as the rep kept calling, which is precisely when
+            // it was needed. Past the ceiling it runs regardless; a pass is cheap, and
+            // running one too many costs nothing while running none loses calls.
+            val now = SystemClock.uptimeMillis()
+            if (settlingSince == 0L) settlingSince = now
+
+            val waited = now - settlingSince
+            val delay = (MAX_SETTLE_MILLIS - waited).coerceIn(0L, DEBOUNCE_MILLIS)
+
             handler.removeCallbacks(triggerReconcile)
-            handler.postDelayed(triggerReconcile, DEBOUNCE_MILLIS)
+            handler.postDelayed(triggerReconcile, delay)
+        }
+    }
+
+    /**
+     * A slow heartbeat, run by the service itself rather than by WorkManager.
+     *
+     * The fifteen-minute scheduled check is the documented safety net, but it is scheduled
+     * work — exactly the thing Xiaomi and Oppo builds defer or drop, and this app already
+     * exists in its current shape because that was measured happening. This one cannot be
+     * throttled: the service is in the foreground, so its own handler keeps ticking.
+     *
+     * It costs one indexed call-log query when nothing has happened, and stays silent in the
+     * activity log unless it actually finds a call, so it cannot become noise.
+     */
+    private val heartbeat = object : Runnable {
+        override fun run() {
+            reconcile(WorkScheduler.REASON_PERIODIC)
+            handler.postDelayed(this, HEARTBEAT_MILLIS)
         }
     }
 
     private val triggerReconcile = Runnable {
+        // Reopens the settling window, so the ceiling is measured per run of changes rather
+        // than from the first change this service ever saw.
+        settlingSince = 0L
+
         // Logged before anything can return early. Without this, a call that is detected but
         // then dropped for any reason looks identical to a call that was never noticed at
         // all — which is exactly what made this impossible to diagnose from the device.
         logger.info(LogStage.CALL, "A call finished — checking whether it was a lead")
         reconcile("a call finished")
+        // And a few more looks shortly after, for a row the phone was still finishing.
+        armFollowUps()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -164,11 +312,14 @@ class CallMonitorService : android.app.Service() {
     }
 
     private fun registerObserver() {
+        registerLineWatcher()
         if (observerRegistered || !callLogReader.hasPermission()) return
 
         runCatching {
             contentResolver.registerContentObserver(CallLog.Calls.CONTENT_URI, true, observer)
             observerRegistered = true
+            handler.removeCallbacks(heartbeat)
+            handler.postDelayed(heartbeat, HEARTBEAT_MILLIS)
             logger.info(
                 LogStage.CALL,
                 "Watching for calls with your leads",
@@ -189,16 +340,25 @@ class CallMonitorService : android.app.Service() {
         // reaching here means a sign-out raced an in-flight check. Nothing worth saying.
         if (!tokenStore.isLoggedIn) return
 
-        if (running?.isActive == true) {
-            // A call ended while the previous reconcile was still working. Remember to go
-            // again rather than running two at once over the same watermark.
-            rerunRequested = true
-            return
-        }
+        // A call ending while the previous check is still working does not start a second
+        // check; the gate remembers it and the running one goes round again.
+        if (!gate.tryStart()) return
 
-        running = scope.launch {
+        // Any abnormal end — the service torn down mid-pass, a scope already cancelled —
+        // releases the gate, so a restarted watcher is never locked out of reconciling.
+        scope.launch { drain(reason) }
+            .invokeOnCompletion { cause -> if (cause != null) gate.abandon() }
+    }
+
+    /** Keeps reconciling for as long as calls keep arriving. */
+    private suspend fun drain(firstReason: String) {
+        var reason = firstReason
+
+        while (true) {
             runCatching { reconciler.reconcile(reason) }
                 .onFailure { error ->
+                    // Cancellation is the service being torn down, not a failure to report.
+                    if (error is CancellationException) throw error
                     logger.error(
                         LogStage.CALL,
                         "Checking the call log failed",
@@ -206,10 +366,14 @@ class CallMonitorService : android.app.Service() {
                     )
                 }
 
-            if (rerunRequested) {
-                rerunRequested = false
-                reconcile("another call finished while checking")
-            }
+            if (!gate.finishAndCheckRerun()) return
+
+            // The same settle pause the observer applies. The platform writes the call log
+            // row and then updates it with the final duration, and a follow-up pass that
+            // started the instant the previous one ended could read a row mid-update and
+            // record a connected call as unanswered.
+            delay(DEBOUNCE_MILLIS)
+            reason = "another call finished while this one was being checked"
         }
     }
 
@@ -228,6 +392,7 @@ class CallMonitorService : android.app.Service() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        unregisterLineWatcher()
         if (observerRegistered) {
             runCatching { contentResolver.unregisterContentObserver(observer) }
             observerRegistered = false
@@ -240,6 +405,31 @@ class CallMonitorService : android.app.Service() {
         private const val ACTION_STOP = "com.example.arthax.action.STOP_CALL_MONITOR"
         private const val EXTRA_REASON = "reason"
         private const val DEBOUNCE_MILLIS = 1_500L
+
+        /**
+         * The longest the settling pause may be extended by further changes.
+         *
+         * Without a ceiling a busy call log postpones the reconcile indefinitely. Five
+         * seconds is still comfortably past the point where a row's duration has settled.
+         */
+        private const val MAX_SETTLE_MILLIS = 5_000L
+
+        /**
+         * When to re-check after a hang-up, as offsets from the hang-up itself. Front-loaded
+         * because most phones write the row within a couple of seconds; the tail covers the
+         * slow ones. After this the one-minute heartbeat takes over.
+         */
+        private val FOLLOW_UP_AFTER_MILLIS = listOf(2_000L, 6_000L, 15_000L, 40_000L)
+
+        /**
+         * One minute. It used to be five, which made a late notification look like a lost
+         * call: Samsung routes call history through its own logs provider, and the change
+         * notification can trail the call by a while, so a rep checking the CRM straight
+         * after a run of redials saw calls "missing" that turned up minutes later. A pass
+         * with nothing new is one indexed query, so a minute is still invisible in battery
+         * terms — and it is now only the last resort behind the hang-up trigger.
+         */
+        private const val HEARTBEAT_MILLIS = 60_000L
         private const val TAG = "ArthaxWatcher"
 
         /**

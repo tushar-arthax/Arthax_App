@@ -1,6 +1,7 @@
 package com.example.arthax.recording
 
 import android.net.Uri
+import com.example.arthax.core.PhoneNumbers
 import com.example.arthax.data.local.prefs.AppSettings
 import com.example.arthax.data.local.store.PendingCallStore
 import com.example.arthax.data.repository.EventLogger
@@ -19,15 +20,19 @@ import javax.inject.Singleton
  * Finds the recording the phone made for a given call, and copies it somewhere the app owns.
  *
  * The hard part is not finding a file, it is finding the *right* file at a moment when it is
- * *finished being written*. Three guards do that:
+ * *finished being written*. Four guards do that:
  *
- *  1. Time window — the file's timestamp must fall inside the call, so a recording of an
- *     earlier personal call can never be attributed to a lead.
- *  2. Size stability — a candidate is accepted only once its byte count is unchanged across
+ *  1. Time window — the file's timestamp must fall inside the call, and must not reach past
+ *     the point where the next call had already begun. So neither an earlier personal call
+ *     nor the following call's audio can be attributed to this lead.
+ *  2. Ranking — among the files that survive, the best match wins, not the newest. Taking
+ *     the newest is exactly how two leads called a minute apart had their recordings
+ *     swapped: see [CallWindow.score].
+ *  3. Size stability — a candidate is accepted only once its byte count is unchanged across
  *     two consecutive polls. OEM recorders finalise the container after hang-up, and a
  *     half-written file matters here: the server transcodes with FFmpeg and rejects
  *     anything it cannot decode.
- *  3. Not already claimed — a file already attached to another call is skipped.
+ *  4. Not already claimed — a file already attached to another call is skipped.
  */
 @Singleton
 class RecordingHarvester @Inject constructor(
@@ -101,8 +106,13 @@ class RecordingHarvester @Inject constructor(
             val scan = finder.findCandidatesSince(treeUri, window.recordingNotBefore)
             lastScan = scan
 
+            // Ranked, not newest-first. Taking the newest acceptable file is what swapped
+            // two leads' recordings when they were called a minute apart: the earlier call
+            // was processed first, saw the later call's file sitting at the top of the list,
+            // and took it. See CallWindow.score.
             val candidates = scan.candidates
                 .filter { it.sizeBytes > 0 && window.accepts(it.lastModified) }
+                .sortedBy { window.score(it.name, it.lastModified) }
 
             // Logged once per call. This one line answers the first question on every
             // missing-recording report: did we look somewhere that actually holds
@@ -204,12 +214,25 @@ class RecordingHarvester @Inject constructor(
             )
         }
 
+        // Says *why* this file was chosen, not just that it was. When two calls happen a
+        // minute apart this line is the difference between "the right audio went to the
+        // right lead" being something you can check and something you have to hope.
+        val matchedByName = PhoneNumbers.looksLikeNumber(
+            candidate.name,
+            PhoneNumbers.matchKey(window.phone),
+        )
+
         logger.success(
             LogStage.DETECT,
             "Captured ${candidate.name} for ${window.leadName.ifBlank { window.leadId }}",
             leadId = window.leadId,
             leadName = window.leadName,
-            detail = "${copy.length() / 1024} KB",
+            detail = "${copy.length() / 1024} KB, " +
+                if (matchedByName) {
+                    "the file is named for this number"
+                } else {
+                    "closest file to the end of this call (${formatTime(candidate.lastModified)})"
+                },
         )
 
         return Result.Captured(
