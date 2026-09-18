@@ -14,7 +14,14 @@
       outbound call starts dialling, not when the callee answers, and exposes no "answered"
       signal at all - so the system call log is the only place the real outcome and the real
       talk duration exist. Without this every placed call would be reported to the CRM as
-      connected. Restricted on Play, which does not apply to a directly distributed APK.
+      connected.
+
+      Restricted on Play. This app is submitted under the "Enterprise CRM / call archiving"
+      exception in the permissions declaration form: it is deployed by an employer to its
+      own sales reps, the disclosure in onboarding says exactly what is collected and where
+      it goes before the permission is requested, and declining leaves the app usable for
+      viewing leads. It is deliberately NOT a dialler replacement: no InCallService, no
+      default-dialler role.
     -->
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
 
@@ -29,8 +36,9 @@
     <!-- Lets WorkManager re-arm pending uploads after a restart. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
-    <!-- Requested at setup, never silently: aggressive power management is the single
-         biggest cause of recordings never being captured on Xiaomi and Oppo hardware. -->
+    <!-- Requested at setup, never silently, and only after the "Keep Arthax running" step
+         has explained why: aggressive power management is the single biggest cause of
+         recordings never being captured on Xiaomi and Oppo hardware. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!--

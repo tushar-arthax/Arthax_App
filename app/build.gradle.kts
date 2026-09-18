@@ -22,7 +22,7 @@ val keystoreProperties = Properties().apply {
 val hasSigningConfig = keystoreProperties.getProperty("storeFile") != null
 
 android {
-    namespace = "com.example.arthax"
+    namespace = "ai.arthax.app"
     compileSdk {
         version = release(36) {
             minorApiLevel = 1
@@ -30,11 +30,16 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.arthax"
+        // The successor to the previous call-recorder app: same applicationId and the same
+        // signing key, so Play and the phones treat it as an update and every installed
+        // copy migrates in place. The source package (ai.arthax.app, the namespace above) is
+        // deliberately different; only the applicationId is identity to Android.
+        applicationId = "com.callrecorder.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        // Must always exceed the last build of the previous app (30).
+        versionCode = 31
+        versionName = "3.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

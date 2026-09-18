@@ -19,7 +19,7 @@
 # The service interface itself, by name. Retrofit builds it through a Proxy and reads its
 # method annotations; renaming the interface is harmless in theory, but keeping it makes
 # the release APK checkable with dexdump and keeps stack traces readable.
--keep interface com.example.arthax.data.remote.api.* { *; }
+-keep interface ai.arthax.app.data.remote.api.* { *; }
 
 # --- OkHttp -------------------------------------------------------------------------
 -dontwarn okhttp3.internal.platform.**
@@ -29,7 +29,7 @@
 
 # --- Moshi --------------------------------------------------------------------------
 # Generated adapters are looked up by name, so the DTOs and their adapters must survive.
--keep class com.example.arthax.data.remote.dto.** { *; }
+-keep class ai.arthax.app.data.remote.dto.** { *; }
 -keep class **JsonAdapter { *; }
 -keepnames @com.squareup.moshi.JsonClass class *
 -keepclassmembers @com.squareup.moshi.JsonClass class * { synthetic <init>(...); }
@@ -55,7 +55,7 @@
 # and Moshi then throws "AssertionError: Missing field" the first time it builds an adapter,
 # which crashes the app on launch. Covers every package - SyncState lives outside
 # domain.model, and that omission is exactly what broke the first minified build.
--keepclassmembers enum com.example.arthax.** {
+-keepclassmembers enum ai.arthax.app.** {
     <fields>;
     public static **[] values();
     public static ** valueOf(java.lang.String);
@@ -66,7 +66,7 @@
 # names of @JsonClass types must survive obfuscation. This covers the file-backed stores
 # (LogEntry, PendingCall) as well as the network DTOs.
 -keep,allowobfuscation @interface com.squareup.moshi.JsonClass
--keep class com.example.arthax.data.local.store.** { *; }
+-keep class ai.arthax.app.data.local.store.** { *; }
 
 # --- Compile-only annotations ---------------------------------------------------------
 # Tink (pulled in by security-crypto) references ErrorProne annotations that are
