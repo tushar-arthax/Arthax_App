@@ -55,7 +55,8 @@ class AuthInterceptor(
 
         val elapsed = System.currentTimeMillis() - startedAt
 
-        if (response.isSuccessful) {
+        // 304 is the config endpoint saying "unchanged" — a success, not a failure to trace.
+        if (response.isSuccessful || response.code == NOT_MODIFIED) {
             logger.info(LogStage.NETWORK, "$label → ${response.code} (${elapsed}ms)")
         } else {
             logger.warn(
@@ -80,5 +81,6 @@ class AuthInterceptor(
     private companion object {
         val AUTH_PATHS = listOf(ApiConfig.Paths.SEND_OTP, ApiConfig.Paths.LOGIN)
         const val ERROR_PEEK_BYTES = 2_048L
+        const val NOT_MODIFIED = 304
     }
 }

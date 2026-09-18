@@ -22,6 +22,11 @@ data class CallCreateRequest(
      * retries so a flaky network cannot create the same call twice in the CRM.
      */
     @Json(name = "external_id") val externalId: String? = null,
+    /**
+     * How the phone decided which lead this was: "click_to_call", "by_phone" or
+     * "lead_cache". Optional server-side; older backends ignore it.
+     */
+    @Json(name = "match_source") val matchSource: String? = null,
 )
 
 /**

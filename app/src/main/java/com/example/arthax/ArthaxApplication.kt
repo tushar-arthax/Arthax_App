@@ -10,7 +10,10 @@ import com.example.arthax.core.ApiConfig
 import com.example.arthax.core.CrashRecorder
 import com.example.arthax.data.local.prefs.SecureTokenStore
 import com.example.arthax.data.local.store.LeadLookupCache
+import com.example.arthax.data.local.store.RemoteConfigStore
 import com.example.arthax.data.local.store.SeenCallStore
+import com.example.arthax.data.local.store.SyncHealthStore
+import com.example.arthax.data.local.store.UnmatchedCallStore
 import com.example.arthax.data.repository.CallSyncRepository
 import com.example.arthax.data.repository.EventLogger
 import com.example.arthax.di.ApplicationScope
@@ -35,6 +38,12 @@ class ArthaxApplication : Application(), Configuration.Provider {
     @Inject lateinit var lookupCache: LeadLookupCache
 
     @Inject lateinit var seenCalls: SeenCallStore
+
+    @Inject lateinit var unmatchedCalls: UnmatchedCallStore
+
+    @Inject lateinit var configStore: RemoteConfigStore
+
+    @Inject lateinit var health: SyncHealthStore
 
     @Inject lateinit var recordingStorage: RecordingStorage
 
@@ -80,10 +89,15 @@ class ArthaxApplication : Application(), Configuration.Provider {
      */
     private fun startUp() = appScope.launch {
         runCatching {
+            // The config first: the intervals the periodic work below is armed with come
+            // from it, and the health store before the logger so the first error counts.
+            configStore.load()
+            health.load()
             logger.load()
             syncRepository.load()
             lookupCache.load()
             seenCalls.load()
+            unmatchedCalls.load()
 
             logger.info(
                 LogStage.SETUP,

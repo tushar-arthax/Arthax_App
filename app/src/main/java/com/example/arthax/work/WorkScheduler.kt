@@ -10,6 +10,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import com.example.arthax.data.local.store.RemoteConfigStore
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -24,6 +25,7 @@ import javax.inject.Singleton
 @Singleton
 class WorkScheduler @Inject constructor(
     private val workManager: WorkManager,
+    private val configStore: RemoteConfigStore,
 ) {
 
     /**
@@ -69,35 +71,56 @@ class WorkScheduler @Inject constructor(
     }
 
     /**
-     * Standing safety net.
+     * Standing safety nets.
      *
      * Everything is already triggered by the events that matter — a call ending, the app
      * opening, a reboot. These periodic runs exist for the cases those miss: an OEM that
      * dropped the broadcast, a process killed mid-scan, a directory that went stale while
-     * the rep never opened the app. Fifteen minutes is the shortest interval WorkManager
-     * allows, and both jobs are cheap no-ops when there is nothing to do.
+     * the rep never opened the app. Both intervals come from the server config; fifteen
+     * minutes is the shortest WorkManager allows, and both jobs are cheap no-ops when there
+     * is nothing to do.
      */
     fun ensurePeriodicWork() {
-        val reconcile = PeriodicWorkRequestBuilder<CallReconcileWorker>(15, TimeUnit.MINUTES)
+        val config = configStore.current
+        val reconcileMinutes = config.syncIntervalMinutes.toLong().coerceAtLeast(MIN_PERIOD_MINUTES)
+        val heartbeatMinutes = config.heartbeatIntervalMinutes.toLong().coerceAtLeast(MIN_PERIOD_MINUTES)
+
+        val reconcile = PeriodicWorkRequestBuilder<CallReconcileWorker>(reconcileMinutes, TimeUnit.MINUTES)
             .setInputData(
                 Data.Builder().putString(CallReconcileWorker.KEY_REASON, REASON_PERIODIC).build(),
             )
             .addTag(TAG_RECONCILE)
             .build()
 
+        // UPDATE, not KEEP or REPLACE. REPLACE on every app start would reset the period and
+        // mean it effectively never fires for someone who opens the app often; KEEP would
+        // never let a changed interval from the server take effect. UPDATE keeps the
+        // existing schedule when nothing changed and re-times it from the last run when
+        // the period did.
         workManager.enqueueUniquePeriodicWork(
             WORK_RECONCILE_PERIODIC,
-            // KEEP: replacing on every app start would reset the interval and mean it
-            // effectively never fires for someone who opens the app often.
-            ExistingPeriodicWorkPolicy.KEEP,
+            ExistingPeriodicWorkPolicy.UPDATE,
             reconcile,
         )
 
+        val heartbeat = PeriodicWorkRequestBuilder<SyncHealthWorker>(heartbeatMinutes, TimeUnit.MINUTES)
+            .setConstraints(
+                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build(),
+            )
+            .addTag(TAG_HEALTH)
+            .build()
+
+        workManager.enqueueUniquePeriodicWork(
+            WORK_HEALTH_PERIODIC,
+            ExistingPeriodicWorkPolicy.UPDATE,
+            heartbeat,
+        )
     }
 
     /** Stops all background work. Used on sign-out. */
     fun cancelAll() {
         workManager.cancelAllWorkByTag(TAG_RECONCILE)
+        workManager.cancelAllWorkByTag(TAG_HEALTH)
     }
 
     /** Sends one queued call to the server: create the record, then attach the audio. */
@@ -143,10 +166,15 @@ class WorkScheduler @Inject constructor(
         const val WORK_RECONCILE = "arthax_reconcile"
         const val WORK_RECONCILE_PERIODIC = "arthax_reconcile_periodic"
         const val WORK_RECONCILE_ONLINE = "arthax_reconcile_online"
+        const val WORK_HEALTH_PERIODIC = "arthax_sync_health"
         const val WORK_SYNC_PREFIX = "arthax_sync_"
 
         const val TAG_SYNC = "sync"
         const val TAG_RECONCILE = "reconcile"
+        const val TAG_HEALTH = "health"
+
+        /** WorkManager's floor for periodic work. */
+        const val MIN_PERIOD_MINUTES = 15L
 
         const val REASON_CALL_ENDED = "a call ended"
         const val REASON_APP_OPENED = "the app was opened"

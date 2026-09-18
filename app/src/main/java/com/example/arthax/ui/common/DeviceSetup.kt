@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
+import com.example.arthax.core.MobileConfig
 
 /**
  * OEM power-management escape hatches.
@@ -26,9 +27,10 @@ object DeviceSetup {
     /**
      * Opens the standard battery-optimisation exemption dialog.
      *
-     * ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS shows a single confirm dialog but is
-     * Play-policy restricted; that is irrelevant here since this app is distributed as a
-     * direct APK. We still fall back to the general list if the OEM removed the dialog.
+     * ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS shows a single confirm dialog. Play
+     * allows it for apps whose core function breaks without it, provided the request is
+     * explained first — which is what the "Keep Arthax running" step does before this is
+     * ever launched. We still fall back to the general list if the OEM removed the dialog.
      */
     fun batteryExemptionIntent(context: Context): Intent =
         Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
@@ -99,10 +101,21 @@ object DeviceSetup {
  * Suggested starting folders for the recordings picker, by manufacturer. Passed to the
  * picker as EXTRA_INITIAL_URI so the rep lands near the right place instead of hunting
  * through the whole filesystem.
+ *
+ * The server config comes first: its recorder profiles are maintained against the fleet
+ * as new phone models turn up, so a Vivo build that moved its folder is fixed by an edit
+ * in the CRM rather than a new APK. The built-in list is what the app shipped with, and
+ * what an unknown phone — or a phone that has never reached the server — falls back to.
  */
 object RecordingFolderHints {
 
-    fun likelyPathsFor(): List<String> = when (Build.MANUFACTURER.lowercase()) {
+    fun likelyPathsFor(config: MobileConfig = MobileConfig.DEFAULTS): List<String> {
+        val fromServer = config.foldersFor(Build.MANUFACTURER)
+        if (fromServer.isNotEmpty()) return fromServer
+        return builtIn()
+    }
+
+    private fun builtIn(): List<String> = when (Build.MANUFACTURER.lowercase()) {
         "samsung" -> listOf("Recordings/Call", "Recordings", "Sounds")
         "xiaomi", "redmi", "poco" -> listOf("MIUI/sound_recorder/call_rec", "MIUI/sound_recorder", "Recorder")
         "oppo", "realme", "oneplus" -> listOf("Recordings/Call Recordings", "Music/Recordings", "Recordings")
@@ -115,13 +128,13 @@ object RecordingFolderHints {
      * A best-guess initial URI for the system picker. Purely a convenience — the rep
      * still confirms the folder, and we only ever use what they actually pick.
      */
-    fun initialTreeUri(): Uri? = runCatching {
-        val path = likelyPathsFor().first().replace("/", "%2F")
+    fun initialTreeUri(config: MobileConfig = MobileConfig.DEFAULTS): Uri? = runCatching {
+        val path = likelyPathsFor(config).first().replace("/", "%2F")
         Uri.parse("content://com.android.externalstorage.documents/document/primary%3A$path")
     }.getOrNull()
 
-    fun humanHint(): String {
-        val paths = likelyPathsFor().joinToString(", ") { "Internal storage / $it" }
+    fun humanHint(config: MobileConfig = MobileConfig.DEFAULTS): String {
+        val paths = likelyPathsFor(config).joinToString(", ") { "Internal storage / $it" }
         return "On ${DeviceSetup.manufacturerLabel()} phones this is usually: $paths"
     }
 }

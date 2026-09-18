@@ -3,6 +3,7 @@ package com.example.arthax.call
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import com.example.arthax.data.local.prefs.AppSettings
 import com.example.arthax.data.repository.EventLogger
 import com.example.arthax.domain.model.CallMode
 import com.example.arthax.domain.model.Lead
@@ -14,23 +15,40 @@ import javax.inject.Singleton
 /**
  * Places a call from the lead list.
  *
- * Deliberately thin. It no longer records "which lead is being called", because that is no
- * longer how calls are attributed — [CallLogReconciler] matches every call, however it was
- * started, against the lead directory by phone number. Remembering an intended lead here
- * would only be a second, less reliable source of truth.
+ * Deliberately thin. Calls are attributed by [CallLogReconciler], which matches every call,
+ * however it was started, against the CRM by phone number — so nothing here decides what
+ * happened on the line.
  *
- * What it still does is start the foreground service, so the process survives the post-call
- * recording scan on OEMs that would otherwise freeze it.
+ * What it does remember is *which lead the rep tapped*, as a [ClickToCallIntent]. That is
+ * not a second source of truth for the call; it is what lets the CRM be told the call was
+ * placed from the app (`match_source = click_to_call`), and what files the call against the
+ * lead the rep chose when two leads share a number.
+ *
+ * It also starts the foreground service, so the process survives the post-call recording
+ * scan on OEMs that would otherwise freeze it.
  */
 @Singleton
 class CallTracker @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val settings: AppSettings,
     private val logger: EventLogger,
 ) {
 
     data class Launch(val intent: Intent, val mode: CallMode)
 
-    fun beginCall(lead: Lead, mode: CallMode): Launch {
+    suspend fun beginCall(lead: Lead, mode: CallMode): Launch {
+        // Persisted before the dialler opens: the process is routinely killed between the
+        // tap and the call log row appearing, and the reconcile that reads the row may
+        // run in a brand new one.
+        settings.setClickToCall(
+            ClickToCallIntent(
+                leadId = lead.id,
+                leadName = lead.name,
+                phone = lead.phoneNumber,
+                at = System.currentTimeMillis(),
+            ),
+        )
+
         logger.info(
             LogStage.CALL,
             "Dialling ${lead.name} on ${lead.phoneNumber}",
@@ -51,11 +69,12 @@ class CallTracker @Inject constructor(
     }
 
     /**
-     * The dial intent could not be fired. Nothing to roll back — the call never reached the
-     * call log, so nothing will be attributed to it — but the service should stop.
+     * The dial intent could not be fired. The call never reached the call log, so the
+     * remembered tap is cleared — otherwise a call the rep dialled by hand later could be
+     * claimed by it. The watcher stays up; it is not tied to any one call.
      */
-    fun abandonCall(reason: String) {
-        // The watcher stays up - it is not tied to any one call.
+    suspend fun abandonCall(reason: String) {
+        settings.setClickToCall(null)
         logger.error(LogStage.CALL, "Call was not placed: $reason")
     }
 }

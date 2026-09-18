@@ -6,7 +6,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import com.example.arthax.call.CallMonitorService
 import com.example.arthax.data.local.prefs.SecureTokenStore
+import com.example.arthax.data.repository.RemoteConfigRepository
+import com.example.arthax.data.repository.SyncHealthReporter
+import com.example.arthax.di.ApplicationScope
 import com.example.arthax.work.WorkScheduler
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.WindowInsets
@@ -27,8 +32,14 @@ class MainActivity : ComponentActivity() {
 
     @Inject lateinit var tokenStore: SecureTokenStore
 
+    @Inject lateinit var healthReporter: SyncHealthReporter
+
+    @Inject lateinit var remoteConfig: RemoteConfigRepository
+
+    @Inject @ApplicationScope lateinit var appScope: CoroutineScope
+
     /**
-     * Checks for missed calls every time the app comes to the foreground.c
+     * Checks for missed calls every time the app comes to the foreground.
      *
      * The equivalent call in Application.onCreate only runs when the *process* starts, so a
      * process that stayed alive — the normal case — never re-checked. That is why granting
@@ -47,6 +58,15 @@ class MainActivity : ComponentActivity() {
         // catch-up check, so this is cheap and idempotent.
         if (tokenStore.isLoggedIn) {
             CallMonitorService.start(this, "app opened")
+
+            // The heartbeat, when the last one is older than its interval, and a config
+            // check on the same schedule. Off the activity's lifetime on purpose: the rep
+            // rotating the phone must not cancel a request halfway.
+            appScope.launch {
+                runCatching {
+                    if (!healthReporter.sendIfDue()) remoteConfig.refreshIfStale()
+                }
+            }
         }
     }
 

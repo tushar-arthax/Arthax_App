@@ -3,6 +3,7 @@ package com.example.arthax.data.repository
 import android.util.Log
 import com.example.arthax.data.local.store.EventLogStore
 import com.example.arthax.data.local.store.LogEntry
+import com.example.arthax.data.local.store.SyncHealthStore
 import com.example.arthax.di.ApplicationScope
 import com.example.arthax.domain.model.LogLevel
 import com.example.arthax.domain.model.LogStage
@@ -25,6 +26,7 @@ import javax.inject.Singleton
 @Singleton
 class EventLogger @Inject constructor(
     private val store: EventLogStore,
+    private val health: SyncHealthStore,
     @ApplicationScope private val appScope: CoroutineScope,
 ) {
 
@@ -62,6 +64,9 @@ class EventLogger @Inject constructor(
         }
 
         appScope.launch {
+            // Every error also feeds the heartbeat, so the fleet dashboard sees "3 errors
+            // in the last day, the last one was X" without the log having to be exported.
+            if (level == LogLevel.ERROR) runCatching { health.recordError(message) }
             runCatching {
                 store.add(
                     LogEntry(
