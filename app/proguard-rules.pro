@@ -1,6 +1,7 @@
-# Minification is currently off for release builds. These rules are here so that turning
-# it on later is a one-line change rather than a debugging session — the failure mode with
-# reflective libraries is a runtime crash in the field, not a build error.
+# Release builds are minified and resource-shrunk. Every rule here exists because the
+# failure mode with reflective libraries is a runtime crash in the field, not a build
+# error — and the smoke test for a change is `dexdump` on the release APK, checking that
+# the generated Moshi adapters and the Retrofit service interface survived by name.
 
 # --- Retrofit -----------------------------------------------------------------------
 # Retrofit reads generic signatures and annotations off the service interface at runtime.
@@ -14,6 +15,11 @@
 
 -if interface * { @retrofit2.http.* public *** *(...); }
 -keep,allowoptimization,allowshrinking,allowobfuscation class <3>
+
+# The service interface itself, by name. Retrofit builds it through a Proxy and reads its
+# method annotations; renaming the interface is harmless in theory, but keeping it makes
+# the release APK checkable with dexdump and keeps stack traces readable.
+-keep interface com.example.arthax.data.remote.api.* { *; }
 
 # --- OkHttp -------------------------------------------------------------------------
 -dontwarn okhttp3.internal.platform.**

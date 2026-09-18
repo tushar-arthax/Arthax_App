@@ -1,3 +1,4 @@
+import com.android.build.api.variant.HostTestBuilder
 import java.util.Properties
 
 plugins {
@@ -104,6 +105,15 @@ android {
                 "/META-INF/DEPENDENCIES"
             )
         }
+    }
+}
+
+androidComponents {
+    // AGP 9 only registers unit tests for the debug build type. The suite is compiled and
+    // run against the release variant as well, because that is the variant that ships:
+    // BuildConfig constants and the minified classpath are what the tests should see.
+    beforeVariants(selector().withBuildType("release")) { variant ->
+        variant.hostTests[HostTestBuilder.UNIT_TEST_TYPE]?.enable = true
     }
 }
 

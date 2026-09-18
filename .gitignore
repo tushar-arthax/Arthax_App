@@ -1,15 +1,23 @@
 *.iml
 .gradle
 /local.properties
+local.properties
 /.idea
 .DS_Store
 /build
+app/build
 /captures
 .externalNativeBuild
 .cxx
-local.properties
 /.kotlin
 
-# Signing secrets - never commit these.
+# Signing secrets - never commit these. The keystore that shipped every existing install
+# lives outside the repo; keystore.properties points the build at it.
 /keystore.properties
 /keystore/
+*.jks
+*.keystore
+
+# Build outputs. The signed APK/AAB for a release is attached to the release, not committed.
+*.apk
+*.aab
