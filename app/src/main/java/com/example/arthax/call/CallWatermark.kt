@@ -49,4 +49,14 @@ object CallWatermark {
      */
     fun isUnseen(rowId: Long, rowDate: Long, sinceId: Long, sinceDate: Long): Boolean =
         rowId > sinceId || rowDate > sinceDate
+
+    /**
+     * Where the trailing window each pass re-reads begins.
+     *
+     * Behind the watermark by the configured look-back, but never below the floor set when
+     * tracking began on this install — however wide the window is made, the phone's call
+     * history from before the app cannot be swept up and posted as though it just happened.
+     */
+    fun windowStart(floor: Long, watermark: Long, lookbackMillis: Long): Long =
+        maxOf(floor, watermark - lookbackMillis)
 }

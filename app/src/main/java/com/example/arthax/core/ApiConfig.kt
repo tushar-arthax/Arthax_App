@@ -28,10 +28,18 @@ object ApiConfig {
         const val ME = "api/users/me"
         const val FCM_TOKEN = "api/users/me/fcm-token"
         const val LEADS = "api/leads/"
+
+        /** Org-wide "who is this number" lookup; the list above is scoped to the rep. */
+        const val LEAD_BY_PHONE = "api/leads/by-phone"
+        const val SYNC_HEALTH = "api/mobile/sync-health"
+        const val MOBILE_CONFIG = "api/mobile/config"
         const val CALLS = "api/calls/"
         const val UPLOAD_RECORDING = "api/calls/{call_id}/upload-recording"
     }
 
     /** Default page size when listing leads. The server caps and defaults to 100. */
     const val LEADS_PAGE_SIZE = 100
+
+    /** Where the privacy policy lives; linked from the disclosure and from Settings. */
+    const val PRIVACY_POLICY_URL = "https://arthax.ai/privacy"
 }

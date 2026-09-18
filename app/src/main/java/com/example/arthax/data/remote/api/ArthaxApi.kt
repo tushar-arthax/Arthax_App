@@ -4,7 +4,11 @@ import com.example.arthax.core.ApiConfig
 import com.example.arthax.data.remote.dto.CallCreateRequest
 import com.example.arthax.data.remote.dto.CallResponseDto
 import com.example.arthax.data.remote.dto.FcmTokenRequest
+import com.example.arthax.data.remote.dto.LeadDto
 import com.example.arthax.data.remote.dto.LeadPageDto
+import com.example.arthax.data.remote.dto.MobileConfigResponseDto
+import com.example.arthax.data.remote.dto.MobileSyncHealthRequest
+import com.example.arthax.data.remote.dto.SyncHealthAckDto
 import com.example.arthax.data.remote.dto.LoginRequest
 import com.example.arthax.data.remote.dto.SendOtpRequest
 import com.example.arthax.data.remote.dto.SendOtpResponse
@@ -16,6 +20,7 @@ import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
+import retrofit2.http.Header
 import retrofit2.http.Multipart
 import retrofit2.http.PATCH
 import retrofit2.http.POST
@@ -68,6 +73,18 @@ interface ArthaxApi {
         @Query("status") status: String? = null,
     ): Response<LeadPageDto>
 
+    /**
+     * "Who is this number?" — across the whole organisation, not just the rep's own list.
+     *
+     * The search above is scoped to the rep's leads, so a call to a colleague's lead or an
+     * unassigned one came back empty and the call was thrown away. This answers for any
+     * lead in the org: 200 with the lead, or 404 with detail "Lead not found for this phone".
+     * Junk leads are returned too, with `is_junk` set, because a call that happened is a
+     * call that happened.
+     */
+    @GET(ApiConfig.Paths.LEAD_BY_PHONE)
+    suspend fun getLeadByPhone(@Query("phone") phone: String): Response<LeadDto>
+
     /** Step 1 of logging a call: create the record and get its id back. */
     @POST(ApiConfig.Paths.CALLS)
     suspend fun createCall(@Body body: CallCreateRequest): Response<CallResponseDto>
@@ -84,4 +101,17 @@ interface ArthaxApi {
         @Path("call_id") callId: String,
         @Part file: MultipartBody.Part,
     ): Response<UploadRecordingResponse>
+
+    /** Hourly heartbeat for the fleet dashboard. The ack carries the current config version. */
+    @POST(ApiConfig.Paths.SYNC_HEALTH)
+    suspend fun postSyncHealth(@Body body: MobileSyncHealthRequest): Response<SyncHealthAckDto>
+
+    /**
+     * Server-driven tunables. Sent with `If-None-Match: "<version>"`, the server answers
+     * 304 when nothing has changed — so the caller must look at the code before the body.
+     */
+    @GET(ApiConfig.Paths.MOBILE_CONFIG)
+    suspend fun getMobileConfig(
+        @Header("If-None-Match") ifNoneMatch: String? = null,
+    ): Response<MobileConfigResponseDto>
 }

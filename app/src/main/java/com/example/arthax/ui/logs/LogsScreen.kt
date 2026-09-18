@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
@@ -87,7 +88,8 @@ fun LogsScreen(
                 selected = state.tab == LogsViewModel.Tab.CALLS,
                 onClick = { viewModel.selectTab(LogsViewModel.Tab.CALLS) },
                 text = {
-                    Text(if (state.outstandingCalls > 0) "Calls (${state.outstandingCalls})" else "Calls")
+                    val badge = state.outstandingCalls + state.reviewCalls.size
+                    Text(if (badge > 0) "Calls ($badge)" else "Calls")
                 },
             )
         }
@@ -232,7 +234,7 @@ private fun LogRow(entry: LogEntry, expanded: Boolean, onClick: () -> Unit) {
 
 @Composable
 private fun CallsTab(state: LogsViewModel.UiState, viewModel: LogsViewModel) {
-    if (state.calls.isEmpty()) {
+    if (state.calls.isEmpty() && state.waitingForLead == 0) {
         EmptyState(
             icon = Icons.Default.CheckCircle,
             title = "No calls queued",
@@ -245,12 +247,143 @@ private fun CallsTab(state: LogsViewModel.UiState, viewModel: LogsViewModel) {
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        items(state.calls, key = { it.id }) { call ->
+        if (state.waitingForLead > 0) {
+            item(key = "waiting") { WaitingForLeadRow(count = state.waitingForLead) }
+        }
+
+        if (state.reviewCalls.isNotEmpty()) {
+            item(key = "review-header") {
+                SectionHeader(
+                    title = "Needs review",
+                    subtitle = "These recordings do not fit their calls. The calls are logged; " +
+                        "decide whether each file should go up.",
+                )
+            }
+            items(state.reviewCalls, key = { it.id }) { call ->
+                ReviewRow(
+                    call = call,
+                    onUploadAnyway = { viewModel.uploadAnyway(call.id) },
+                    onNotThisCall = { viewModel.notThisCall(call.id) },
+                )
+            }
+            if (state.otherCalls.isNotEmpty()) {
+                item(key = "queue-header") { SectionHeader(title = "Queue", subtitle = null) }
+            }
+        }
+
+        items(state.otherCalls, key = { it.id }) { call ->
             CallRow(
                 call = call,
                 onRetry = { viewModel.retry(call.id) },
                 onDiscard = { viewModel.discard(call.id) },
             )
+        }
+    }
+}
+
+@Composable
+private fun SectionHeader(title: String, subtitle: String?) {
+    Column(Modifier.padding(top = 6.dp)) {
+        Text(
+            text = title.uppercase(),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (subtitle != null) {
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * Deliberately a count and nothing else. These are calls to numbers the CRM does not know,
+ * which makes them the rep's own business until a lead appears — so no number, no time.
+ */
+@Composable
+private fun WaitingForLeadRow(count: Int) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Text(
+                text = "$count call(s) waiting for a matching lead",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "The CRM did not recognise these numbers. They are re-checked on every pass " +
+                    "and sent — with their recordings — as soon as a lead with that number exists.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReviewRow(call: PendingCall, onUploadAnyway: () -> Unit, onNotThisCall: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(call.leadName, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = buildString {
+                            append(formatTime(call.endedAt))
+                            append(" · ")
+                            append(if (call.connected) "${call.durationSeconds}s call" else "not answered")
+                            call.audioSeconds?.let { append(" · ${it.toInt()}s of audio") }
+                            if (call.hasRecording) append(" · ${call.sizeBytes / 1024} KB")
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                StatusPill(
+                    text = "Needs review",
+                    container = statusColors.warningContainer,
+                    content = statusColors.warning,
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = call.reviewReason ?: "The recording did not fit the call.",
+                style = MaterialTheme.typography.bodySmall,
+                color = statusColors.warning,
+            )
+            call.fileName?.let {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onUploadAnyway, enabled = call.hasRecording) { Text("Upload anyway") }
+                TextButton(onClick = onNotThisCall) {
+                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Not this call")
+                }
+            }
         }
     }
 }
@@ -274,6 +407,8 @@ private fun CallRow(call: PendingCall, onRetry: () -> Unit, onDiscard: () -> Uni
             MaterialTheme.colorScheme.errorContainer,
             MaterialTheme.colorScheme.onErrorContainer,
         )
+        // Shown by ReviewRow instead; listed here so the pill is never missing a case.
+        SyncState.NEEDS_REVIEW -> Triple("Needs review", statusColors.warningContainer, statusColors.warning)
     }
 
     Card(
@@ -304,6 +439,15 @@ private fun CallRow(call: PendingCall, onRetry: () -> Unit, onDiscard: () -> Uni
                 Spacer(Modifier.height(8.dp))
                 Text(
                     text = "No recording was found for this call — the call itself is still logged.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = statusColors.warning,
+                )
+            }
+
+            if (call.recordingHeld) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Recording held for review once the call is logged: ${call.reviewReason}",
                     style = MaterialTheme.typography.bodySmall,
                     color = statusColors.warning,
                 )

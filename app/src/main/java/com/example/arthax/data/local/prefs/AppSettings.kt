@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.example.arthax.call.ClickToCallIntent
 import com.example.arthax.domain.model.CallMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -25,9 +26,23 @@ class AppSettings(private val context: Context) {
         val scanTimeoutSeconds: Int,
         val batteryPromptShown: Boolean,
         val autostartPromptShown: Boolean,
+        val consent: Consent,
     ) {
         val hasRecordingsFolder: Boolean get() = !recordingsTreeUri.isNullOrBlank()
+
+        /** Call tracking only ever runs once the rep has read the disclosure and accepted it. */
+        val callTrackingAllowed: Boolean get() = consent == Consent.ACCEPTED
     }
+
+    /**
+     * The rep's answer to the prominent disclosure shown before any call permission is
+     * requested. Play's policy asks for it, and it is the right thing regardless: an app
+     * that watches every call should say so in its own words and take no for an answer.
+     *
+     * DECLINED leaves the app usable for viewing and dialling leads; nothing is read from
+     * the call log and nothing is uploaded until the rep changes their mind in Settings.
+     */
+    enum class Consent { UNDECIDED, ACCEPTED, DECLINED }
 
     val snapshot: Flow<Snapshot> = context.dataStore.data.map { p ->
         Snapshot(
@@ -39,7 +54,47 @@ class AppSettings(private val context: Context) {
             scanTimeoutSeconds = p[KEY_SCAN_TIMEOUT] ?: DEFAULT_SCAN_TIMEOUT_SECONDS,
             batteryPromptShown = p[KEY_BATTERY_PROMPT] ?: false,
             autostartPromptShown = p[KEY_AUTOSTART_PROMPT] ?: false,
+            consent = p[KEY_CONSENT]?.let { raw ->
+                runCatching { Consent.valueOf(raw) }.getOrDefault(Consent.UNDECIDED)
+            } ?: Consent.UNDECIDED,
         )
+    }
+
+    val consent: Flow<Consent> = snapshot.map { it.consent }
+
+    suspend fun setConsent(consent: Consent) = context.dataStore.edit { p ->
+        p[KEY_CONSENT] = consent.name
+    }
+
+    /**
+     * The lead the rep last tapped CALL on, or null when there is none outstanding.
+     *
+     * Persisted rather than held in memory because the process is routinely killed between
+     * the tap and the call log row appearing — that is the whole reason the watcher exists.
+     */
+    val clickToCall: Flow<ClickToCallIntent?> = context.dataStore.data.map { p ->
+        val leadId = p[KEY_C2C_LEAD_ID] ?: return@map null
+        val at = p[KEY_C2C_AT] ?: return@map null
+        ClickToCallIntent(
+            leadId = leadId,
+            leadName = p[KEY_C2C_LEAD_NAME].orEmpty(),
+            phone = p[KEY_C2C_PHONE].orEmpty(),
+            at = at,
+        )
+    }
+
+    suspend fun setClickToCall(intent: ClickToCallIntent?) = context.dataStore.edit { p ->
+        if (intent == null) {
+            p.remove(KEY_C2C_LEAD_ID)
+            p.remove(KEY_C2C_LEAD_NAME)
+            p.remove(KEY_C2C_PHONE)
+            p.remove(KEY_C2C_AT)
+        } else {
+            p[KEY_C2C_LEAD_ID] = intent.leadId
+            p[KEY_C2C_LEAD_NAME] = intent.leadName
+            p[KEY_C2C_PHONE] = intent.phone
+            p[KEY_C2C_AT] = intent.at
+        }
     }
 
     val recordingsTreeUri: Flow<String?> = context.dataStore.data.map { it[KEY_TREE_URI] }
@@ -151,6 +206,11 @@ class AppSettings(private val context: Context) {
         private val KEY_TRACKING_FLOOR = longPreferencesKey("call_tracking_floor")
         private val KEY_CALL_LOG_WARNED = booleanPreferencesKey("call_log_warned")
         private val KEY_CALL_LOG_REQUESTED = booleanPreferencesKey("call_log_requested")
+        private val KEY_CONSENT = stringPreferencesKey("call_tracking_consent")
+        private val KEY_C2C_LEAD_ID = stringPreferencesKey("click_to_call_lead_id")
+        private val KEY_C2C_LEAD_NAME = stringPreferencesKey("click_to_call_lead_name")
+        private val KEY_C2C_PHONE = stringPreferencesKey("click_to_call_phone")
+        private val KEY_C2C_AT = longPreferencesKey("click_to_call_at")
 
         /**
          * How long the harvester keeps looking for the recording after hang-up.

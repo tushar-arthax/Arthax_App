@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.arthax.data.local.store.LogEntry
 import com.example.arthax.data.local.store.PendingCall
+import com.example.arthax.data.local.store.UnmatchedCallStore
 import com.example.arthax.data.repository.CallSyncRepository
 import com.example.arthax.data.repository.EventLogger
 import com.example.arthax.domain.model.LogLevel
@@ -23,6 +24,7 @@ import javax.inject.Inject
 class LogsViewModel @Inject constructor(
     private val eventLogger: EventLogger,
     private val syncRepository: CallSyncRepository,
+    private val unmatched: UnmatchedCallStore,
     private val workScheduler: WorkScheduler,
 ) : ViewModel() {
 
@@ -38,6 +40,8 @@ class LogsViewModel @Inject constructor(
         val filters: Filters = Filters(),
         val logs: List<LogEntry> = emptyList(),
         val calls: List<PendingCall> = emptyList(),
+        /** Calls the CRM did not recognise yet; only a count is shown, never a number. */
+        val waitingForLead: Int = 0,
         val expandedLogId: String? = null,
     ) {
         val tab: Tab get() = filters.tab
@@ -51,6 +55,11 @@ class LogsViewModel @Inject constructor(
             }
 
         val outstandingCalls: Int get() = calls.count { it.isOutstanding }
+
+        /** Recordings waiting for the rep's decision, shown in their own section. */
+        val reviewCalls: List<PendingCall> get() = calls.filter { it.needsReview }
+
+        val otherCalls: List<PendingCall> get() = calls.filterNot { it.needsReview }
     }
 
     private val filters = MutableStateFlow(Filters())
@@ -59,10 +68,17 @@ class LogsViewModel @Inject constructor(
     val state: StateFlow<UiState> = combine(
         eventLogger.entries,
         syncRepository.queue,
+        unmatched.items,
         filters,
         expandedLogId,
-    ) { logs, calls, filter, expanded ->
-        UiState(filters = filter, logs = logs, calls = calls, expandedLogId = expanded)
+    ) { logs, calls, waiting, filter, expanded ->
+        UiState(
+            filters = filter,
+            logs = logs,
+            calls = calls,
+            waitingForLead = waiting.size,
+            expandedLogId = expanded,
+        )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -82,6 +98,25 @@ class LogsViewModel @Inject constructor(
         viewModelScope.launch {
             syncRepository.requeue(id)
             workScheduler.forceSync(id)
+        }
+    }
+
+    /** The rep has looked at a held recording and wants it sent after all. */
+    fun uploadAnyway(id: String) {
+        viewModelScope.launch {
+            syncRepository.uploadAnyway(id)
+            workScheduler.forceSync(id)
+        }
+    }
+
+    /** The held file is not this call's. It is deleted; the call stays logged. */
+    fun notThisCall(id: String) {
+        viewModelScope.launch {
+            syncRepository.notThisCall(id)
+            // Only a call that never reached the CRM has anything left to send.
+            if (syncRepository.queue.value.any { it.id == id && it.isOutstanding }) {
+                workScheduler.forceSync(id)
+            }
         }
     }
 

@@ -1,6 +1,7 @@
 package com.example.arthax.ui.settings
 
 import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -50,8 +51,10 @@ import com.example.arthax.domain.model.CallMode
 import com.example.arthax.ui.common.AppPermissions
 import com.example.arthax.ui.common.DeviceSetup
 import com.example.arthax.ui.common.ErrorBanner
-import com.example.arthax.ui.common.RecordingFolderHints
 import com.example.arthax.ui.theme.statusColors
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun SettingsScreen(
@@ -147,6 +150,24 @@ fun SettingsScreen(
         }
 
         SettingsSection(title = "Calls being matched") {
+            if (!state.callTrackingOn) {
+                StatusLine(
+                    ok = false,
+                    text = "Call tracking is off — you declined it at setup",
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "Nothing is read from your call log and no recording is uploaded. " +
+                        "Leads can still be viewed and dialled. Turning it on shows the " +
+                        "disclosure again and asks for the permissions it needs.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(onClick = viewModel::turnOnCallTracking) { Text("Turn on call tracking") }
+                Spacer(Modifier.height(6.dp))
+                PrivacyPolicyLink()
+            } else {
             StatusLine(
                 ok = state.callLogPermission,
                 text = if (state.callLogPermission) {
@@ -160,11 +181,30 @@ fun SettingsScreen(
                 text = "Incoming and outgoing, whether or not Arthax is open. Every call is " +
                     "checked against your CRM as it happens, so a lead added a minute ago is " +
                     "matched and a lead removed stops being matched straight away - nothing " +
-                    "is downloaded in bulk. Calls to numbers that are not leads are ignored " +
-                    "completely: no recording is touched and nothing is uploaded.",
+                    "is downloaded in bulk. Calls to numbers that are not leads are kept " +
+                    "on this phone for a few days in case the lead is added, and are never " +
+                    "uploaded until it is.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (state.waitingForLead > 0) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "${state.waitingForLead} call(s) waiting for a matching lead",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            if (state.uploadsPausedUntil != null) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "Recording uploads are paused until " +
+                        "${formatClock(state.uploadsPausedUntil ?: 0L)} — the organisation is " +
+                        "out of credits. Calls are still logged.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = statusColors.warning,
+                )
+            }
             if (state.cachedLookups > 0) {
                 Spacer(Modifier.height(6.dp))
                 Text(
@@ -201,8 +241,16 @@ fun SettingsScreen(
                     Text("Re-check numbers")
                 }
             }
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                PrivacyPolicyLink()
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = viewModel::turnOffCallTracking) { Text("Turn off") }
+            }
+            }
         }
 
+        if (state.callTrackingOn) {
         SettingsSection(title = "Recordings folder") {
             if (state.folderError != null) {
                 ErrorBanner(message = state.folderError.orEmpty())
@@ -216,14 +264,15 @@ fun SettingsScreen(
             }
 
             Text(
-                text = RecordingFolderHints.humanHint(),
+                text = state.folderHint,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(10.dp))
-            OutlinedButton(onClick = { folderLauncher.launch(RecordingFolderHints.initialTreeUri()) }) {
+            OutlinedButton(onClick = { folderLauncher.launch(state.folderPickerStart) }) {
                 Text(if (state.folderError == null) "Change folder" else "Select folder")
             }
+        }
         }
 
         SettingsSection(title = "How long to wait for a recording") {
@@ -336,6 +385,20 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                // Which server config this phone is on, and the one number from it a rep
+                // may be asked about: how far back the call log is read.
+                text = if (state.configVersion > 0) {
+                    "Server config v${state.configVersion} · looks back ${state.lookbackHours}h"
+                } else {
+                    "Built-in config · looks back ${state.lookbackHours}h"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(6.dp))
+            PrivacyPolicyLink()
         }
 
         Spacer(Modifier.height(32.dp))
@@ -366,6 +429,27 @@ fun SettingsScreen(
         )
     }
 }
+
+@Composable
+private fun PrivacyPolicyLink() {
+    val context = LocalContext.current
+    TextButton(
+        onClick = {
+            runCatching {
+                context.startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(ApiConfig.PRIVACY_POLICY_URL))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
+        },
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
+    ) {
+        Text("Privacy policy")
+    }
+}
+
+private fun formatClock(millis: Long): String =
+    SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(millis))
 
 @Composable
 private fun SettingsSection(

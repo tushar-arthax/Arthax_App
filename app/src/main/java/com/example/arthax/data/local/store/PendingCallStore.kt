@@ -30,6 +30,13 @@ enum class SyncState {
 
     /** Permanently rejected — a human needs to look. The local file is kept. */
     FAILED,
+
+    /**
+     * The call is in the CRM but its recording was held back for the rep to look at: the
+     * audio is much shorter or longer than the call, or the server refused the file. The
+     * local copy is kept until the rep says "upload anyway" or "not this call".
+     */
+    NEEDS_REVIEW,
 }
 
 /**
@@ -78,6 +85,9 @@ data class PendingCall(
     /** Real talk seconds from the call log — ringing excluded. */
     @Json(name = "duration_seconds") val durationSeconds: Int,
 
+    /** How the lead was decided — sent as `match_source`. Null on rows from older builds. */
+    @Json(name = "match_source") val matchSource: String? = null,
+
     /**
      * Which rep captured this call. Queued calls survive a sign-out, and the server derives
      * the agent from whichever bearer token uploads them — so without this, a call made by
@@ -104,6 +114,16 @@ data class PendingCall(
     /** Dedupe key: the SAF document URI the recording was copied from. */
     @Json(name = "source_uri") val sourceUri: String? = null,
 
+    /** Measured length of the copied audio, when it could be read. */
+    @Json(name = "audio_seconds") val audioSeconds: Double? = null,
+
+    /**
+     * Why the recording is being held for a human. Set at capture when the audio does not
+     * fit the call, or later when the server refuses the file; the row moves to
+     * [SyncState.NEEDS_REVIEW] once the call itself has been posted.
+     */
+    @Json(name = "review_reason") val reviewReason: String? = null,
+
     @Json(name = "state") val state: SyncState = SyncState.PENDING_CALL_RECORD,
     @Json(name = "attempts") val attempts: Int = 0,
     @Json(name = "last_error") val lastError: String? = null,
@@ -113,6 +133,12 @@ data class PendingCall(
     val hasRecording: Boolean get() = !localFilePath.isNullOrBlank()
 
     val isOutstanding: Boolean get() = state == SyncState.PENDING_CALL_RECORD || state == SyncState.PENDING_UPLOAD
+
+    /** Waiting on a person, not on the network. */
+    val needsReview: Boolean get() = state == SyncState.NEEDS_REVIEW
+
+    /** Held back at capture and not yet posted: the call will go up, the file will wait. */
+    val recordingHeld: Boolean get() = reviewReason != null && state == SyncState.PENDING_CALL_RECORD
 }
 
 @Singleton
@@ -153,19 +179,40 @@ class PendingCallStore @Inject constructor(
 
     fun outstanding(): List<PendingCall> = items.value.filter { it.isOutstanding }
 
+    fun needingReview(): List<PendingCall> = items.value.filter { it.needsReview }
+
     /** Outstanding calls belonging to this rep. Rows with no owner predate the field. */
     fun outstandingFor(userId: String?): List<PendingCall> =
         items.value.filter { it.isOutstanding && (it.ownerUserId == null || it.ownerUserId == userId) }
 
     fun byId(id: String): PendingCall? = items.value.firstOrNull { it.id == id }
 
-    /** Drops long-since-delivered rows; their local files are already gone. */
-    suspend fun pruneDelivered(olderThanMillis: Long) = mutate { current ->
+    /**
+     * Drops long-since-delivered rows; their local files are already gone.
+     *
+     * Returns the (row id, date) of every call let go, so the caller can hand them to the
+     * dismissed list. The reconcile re-reads a trailing window of the call log that is now
+     * wider than this retention, and a delivered call that had simply been forgotten would
+     * be posted a second time.
+     */
+    suspend fun pruneDelivered(olderThanMillis: Long): List<Pair<Long, Long>> {
         val cutoff = System.currentTimeMillis() - olderThanMillis
-        current.filterNot { it.state == SyncState.DONE && it.updatedAt < cutoff }
+        val pruned = mutableListOf<Pair<Long, Long>>()
+        mutate { current ->
+            current.filterNot { row ->
+                val gone = row.state == SyncState.DONE && row.updatedAt < cutoff
+                if (gone) pruned += row.callLogId to row.callLogDate
+                gone
+            }
+        }
+        return pruned
     }
 
     private companion object {
-        const val MAX_ENTRIES = 200
+        /**
+         * Raised from 200 when the call-log window grew to three days: a busy rep's week
+         * of calls must fit, or rows drop off the end before being remembered as delivered.
+         */
+        const val MAX_ENTRIES = 600
     }
 }

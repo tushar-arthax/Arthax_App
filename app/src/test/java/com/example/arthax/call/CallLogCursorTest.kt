@@ -216,6 +216,77 @@ class CallLogCursorTest {
         assertTrue("a second pass over the same window must do nothing", toProcess.isEmpty())
     }
 
+    // -------------------------------------------------------------------------------
+    // A three-day window: wide enough to survive a dead watcher, and still exactly once
+    // -------------------------------------------------------------------------------
+
+    /**
+     * Six hours was not enough. The watcher is a foreground service, and OEM builds kill
+     * it anyway; a rep whose watcher died on Friday afternoon and who next opened the app
+     * on Monday lost the whole shift, because the window had moved on without it. Seventy
+     * two hours covers a weekend.
+     */
+    @Test
+    fun `a call from forty hours ago that both watermarks passed over is still found`() {
+        val lookback = 72L * 60 * 60 * 1000
+        val handled = Row(id = 905, date = t0)
+        val late = Row(id = 904, date = t0 - 40L * 60 * 60 * 1000) // lower id AND earlier date
+
+        assertFalse(
+            CallWatermark.isUnseen(late.id, late.date, sinceId = handled.id, sinceDate = handled.date),
+        )
+
+        val windowFrom = CallWatermark.windowStart(floor = 0L, watermark = handled.date, lookbackMillis = lookback)
+        val returned = listOf(handled, late).filter { it.date > windowFrom }
+
+        assertTrue("forty hours is inside the window", late in returned)
+    }
+
+    @Test
+    fun `the window never reaches below the tracking floor`() {
+        // The floor is where tracking began on this install. However wide the window, the
+        // phone's earlier history must never be swept up and posted.
+        val floor = t0
+        val watermark = t0 + 60_000
+
+        assertEquals(floor, CallWatermark.windowStart(floor, watermark, lookbackMillis = 72L * 60 * 60 * 1000))
+    }
+
+    @Test
+    fun `the window reaches back exactly the look-back when the floor allows`() {
+        val lookback = 72L * 60 * 60 * 1000
+        val watermark = t0 + 10 * lookback
+
+        assertEquals(watermark - lookback, CallWatermark.windowStart(0L, watermark, lookback))
+    }
+
+    /**
+     * The queue prunes delivered rows after three days, and the window is now three days
+     * wide. A delivered call that had simply been forgotten would come back through the
+     * window and be posted again — so pruning hands each row's identity to the dismissed
+     * list, and a second pass still recognises it.
+     */
+    @Test
+    fun `a delivered call pruned from the queue is still recognised through the dismissed list`() {
+        val delivered = Row(id = 1001, date = t0)
+        val queued = mutableListOf(delivered)
+        val dismissed = mutableListOf<Row>()
+
+        // The prune: the row leaves the queue and its identity moves to the dismissed list.
+        dismissed += queued.removeAt(0)
+
+        val windowFrom = CallWatermark.windowStart(0L, t0 + 1, 72L * 60 * 60 * 1000)
+        val returned = listOf(delivered).filter { it.date > windowFrom }
+        assertEquals(listOf(delivered), returned)
+
+        val toProcess = returned.filterNot { row ->
+            queued.any { CallWatermark.isSameCall(it.id, it.date, row.id, row.date) } ||
+                dismissed.any { CallWatermark.isSameCall(it.id, it.date, row.id, row.date) }
+        }
+
+        assertTrue("a pruned delivered call must never be posted twice", toProcess.isEmpty())
+    }
+
     @Test
     fun `nothing is processed twice when the same pass runs again`() {
         val rows = listOf(Row(id = 601, date = t0), Row(id = 602, date = t0 + 10_000))

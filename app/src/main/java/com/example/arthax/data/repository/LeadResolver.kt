@@ -8,6 +8,7 @@ import com.example.arthax.data.remote.api.ArthaxApi
 import com.example.arthax.data.remote.api.safeApiCall
 import com.example.arthax.data.remote.dto.LeadDto
 import com.example.arthax.domain.model.LogStage
+import com.example.arthax.domain.model.MatchSource
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -16,11 +17,16 @@ import javax.inject.Singleton
  *
  * The CRM is asked every single time, and that is the point. The answer is live: a lead
  * added a minute before the call is found, and a lead deleted or reassigned in the CRM stops
- * being matched from that moment on. Nothing is ever bulk downloaded — the lead-search
- * endpoint is asked about one number — so this costs one small request per call and behaves
- * identically against a CRM of a hundred leads or ten million.
+ * being matched from that moment on. Nothing is ever bulk downloaded — one small request per
+ * call, and it behaves identically against a CRM of a hundred leads or ten million.
  *
- * The local list is a fallback for one situation only: the CRM could not be reached at all.
+ * The question goes to `GET /api/leads/by-phone`, which looks across the whole organisation.
+ * The lead *search* it replaced was scoped to the rep's own list, so a call to a colleague's
+ * lead, or to one nobody had been assigned yet, came back "not a lead" and was thrown away
+ * — recording, duration, outcome, gone. The search is kept only as a fallback for a backend
+ * old enough not to have the endpoint at all.
+ *
+ * The local list is a fallback for one situation only: the CRM could not be reached.
  */
 @Singleton
 class LeadResolver @Inject constructor(
@@ -31,14 +37,25 @@ class LeadResolver @Inject constructor(
 ) {
 
     sealed interface Resolution {
-        data class Lead(val id: String, val name: String, val fromCache: Boolean) : Resolution
+        data class Lead(
+            val id: String,
+            val name: String,
+            val source: MatchSource,
+            /**
+             * Reported, never acted on. A call already made to a junk lead is still a real
+             * call and belongs in the CRM; filtering it out here would silently discard it.
+             */
+            val isJunk: Boolean = false,
+        ) : Resolution {
+            val fromCache: Boolean get() = source == MatchSource.LEAD_CACHE
+        }
 
         /**
-         * The CRM says this number is not a lead. The call is the rep's own business: no
-         * recording is touched, nothing is uploaded, and the number is never written down.
+         * The CRM says this number is not a lead *right now*. The call is parked in the
+         * unmatched list and asked about again later — never dropped, because a stranger
+         * this morning is often a lead by the afternoon.
          *
-         * Only ever a live answer. Nothing is dropped on the strength of something
-         * remembered, because a stranger an hour ago may be a lead now.
+         * Only ever a live answer. Nothing is parked on the strength of something remembered.
          */
         data object NotALead : Resolution
 
@@ -50,6 +67,19 @@ class LeadResolver @Inject constructor(
         data class Unavailable(val reason: String) : Resolution
     }
 
+    /** What one `by-phone` round trip meant. Pure, so the mapping is pinned by a unit test. */
+    sealed interface ByPhoneOutcome {
+        data class Found(val lead: LeadDto) : ByPhoneOutcome
+
+        /** The endpoint answered and said no. */
+        data object NotALead : ByPhoneOutcome
+
+        /** A 404 without the endpoint's own wording: an older backend that lacks the route. */
+        data object EndpointMissing : ByPhoneOutcome
+
+        data class Unavailable(val failure: ApiResult.Failure) : ByPhoneOutcome
+    }
+
     suspend fun resolve(rawNumber: String?): Resolution {
         val key = PhoneNumbers.matchKey(rawNumber)
         // Withheld, unknown or malformed numbers cannot belong to anyone.
@@ -57,6 +87,57 @@ class LeadResolver @Inject constructor(
 
         if (!tokenStore.isLoggedIn) return Resolution.Unavailable("not signed in")
 
+        return when (val outcome = classifyByPhone(safeApiCall { api.getLeadByPhone(key) })) {
+            is ByPhoneOutcome.Found -> accept(rawNumber, outcome.lead)
+            ByPhoneOutcome.NotALead -> reject(rawNumber)
+            ByPhoneOutcome.EndpointMissing -> resolveBySearch(rawNumber, key)
+            is ByPhoneOutcome.Unavailable -> fallBack(rawNumber, outcome.failure)
+        }
+    }
+
+    /**
+     * The offline answer only — no network. Used on every reconcile pass for calls still
+     * waiting for a lead, where a server round trip per row is rationed but a look at the
+     * local list is free.
+     */
+    fun resolveFromCache(rawNumber: String?): Resolution.Lead? {
+        val remembered = cache.peek(rawNumber)
+        if (remembered.verdict != LeadLookupCache.Verdict.LEAD) return null
+        return Resolution.Lead(
+            id = remembered.leadId!!,
+            name = remembered.leadName.orEmpty(),
+            source = MatchSource.LEAD_CACHE,
+        )
+    }
+
+    private suspend fun accept(rawNumber: String?, lead: LeadDto): Resolution {
+        val name = lead.name.trim().ifBlank { "Unnamed lead" }
+        cache.rememberLead(rawNumber, lead.id, name)
+        if (lead.isJunk) {
+            logger.warn(
+                LogStage.SYNC,
+                "This number belongs to a lead marked junk — the call is still logged",
+                leadId = lead.id,
+                leadName = name,
+            )
+        }
+        return Resolution.Lead(lead.id, name, MatchSource.BY_PHONE, isJunk = lead.isJunk)
+    }
+
+    private suspend fun reject(rawNumber: String?): Resolution {
+        // A live "no", and it overrides anything remembered. This is what makes a lead
+        // deleted or reassigned in the CRM stop being matched at once, rather than going on
+        // collecting calls from the offline list.
+        cache.forget(rawNumber)
+        return Resolution.NotALead
+    }
+
+    /**
+     * The pre-`by-phone` path, for a backend that predates the endpoint. Scoped to the
+     * rep's own leads, which is exactly the weakness the new route fixes — so this is a
+     * last resort, not an alternative.
+     */
+    private suspend fun resolveBySearch(rawNumber: String?, key: String): Resolution {
         val result = safeApiCall {
             api.getLeads(
                 skip = 0,
@@ -73,18 +154,7 @@ class LeadResolver @Inject constructor(
         return when (result) {
             is ApiResult.Success -> {
                 val match = pickMatch(result.data.items, key)
-
-                if (match == null) {
-                    // A live "no", and it overrides anything remembered. This is what makes a
-                    // lead deleted or reassigned in the CRM stop being matched at once,
-                    // rather than going on collecting calls from the offline list.
-                    cache.forget(rawNumber)
-                    Resolution.NotALead
-                } else {
-                    val name = match.name.trim().ifBlank { "Unnamed lead" }
-                    cache.rememberLead(rawNumber, match.id, name)
-                    Resolution.Lead(match.id, name, fromCache = false)
-                }
+                if (match == null) reject(rawNumber) else accept(rawNumber, match)
             }
 
             is ApiResult.Failure -> fallBack(rawNumber, result)
@@ -103,22 +173,18 @@ class LeadResolver @Inject constructor(
      * or a genuine call would be dropped the moment a rep stepped into a lift.
      */
     private fun fallBack(rawNumber: String?, failure: ApiResult.Failure): Resolution {
-        val remembered = cache.peek(rawNumber)
+        val remembered = resolveFromCache(rawNumber)
 
-        if (remembered.verdict == LeadLookupCache.Verdict.LEAD) {
+        if (remembered != null) {
             logger.warn(
                 LogStage.SYNC,
                 "Matched a call from the offline list — the CRM could not be reached",
-                leadId = remembered.leadId,
-                leadName = remembered.leadName,
+                leadId = remembered.id,
+                leadName = remembered.name,
                 detail = "The recording is being captured now rather than risked. " +
                     "Reason: ${failure.detail ?: failure.message}",
             )
-            return Resolution.Lead(
-                id = remembered.leadId!!,
-                name = remembered.leadName.orEmpty(),
-                fromCache = true,
-            )
+            return remembered
         }
 
         logger.warn(
@@ -131,9 +197,9 @@ class LeadResolver @Inject constructor(
     }
 
     /**
-     * Chooses the lead a number really belongs to.
+     * Chooses the lead a number really belongs to, from a *search* result.
      *
-     * The endpoint is a fuzzy *text* search across several columns, so the first item is not
+     * The endpoint is a fuzzy text search across several columns, so the first item is not
      * necessarily — or even usually — a phone match: a lead whose notes happen to contain
      * those digits ranks just as well. Taking `items.first()` would file a call against the
      * wrong customer, and nothing downstream would ever notice.
@@ -171,11 +237,39 @@ class LeadResolver @Inject constructor(
         return chosen
     }
 
-    private companion object {
+    companion object {
+        /**
+         * The endpoint's own wording for "no such lead". A 404 carrying anything else is a
+         * route that does not exist, which is a very different answer.
+         */
+        const val NOT_FOUND_DETAIL = "Lead not found for this phone"
+
         /**
          * Small on purpose. We are looking for one exact phone match, not browsing; a large
          * page would only make the response heavier for no gain.
          */
-        const val SEARCH_LIMIT = 25
+        private const val SEARCH_LIMIT = 25
+
+        /**
+         * Maps a `by-phone` response onto what it means for the call.
+         *
+         * Only two answers are final: a lead, or the endpoint's own "not found". A 400 is
+         * the server refusing a number too short to be anyone's, which is final too.
+         * Everything else — a dead connection, a 5xx, a 401 while the session is being
+         * re-established — is "ask again later", because a call must never be parked as
+         * "not a lead" on the strength of an outage.
+         */
+        fun classifyByPhone(result: ApiResult<LeadDto>): ByPhoneOutcome = when (result) {
+            is ApiResult.Success -> ByPhoneOutcome.Found(result.data)
+
+            is ApiResult.Failure.Rejected -> when {
+                result.code == 404 && result.detail?.trim() == NOT_FOUND_DETAIL -> ByPhoneOutcome.NotALead
+                result.code == 404 -> ByPhoneOutcome.EndpointMissing
+                result.code == 400 -> ByPhoneOutcome.NotALead
+                else -> ByPhoneOutcome.Unavailable(result)
+            }
+
+            is ApiResult.Failure -> ByPhoneOutcome.Unavailable(result)
+        }
     }
 }

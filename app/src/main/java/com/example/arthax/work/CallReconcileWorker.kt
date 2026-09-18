@@ -11,7 +11,10 @@ import kotlinx.coroutines.CancellationException
 import com.example.arthax.call.CallLogReconciler
 import com.example.arthax.data.repository.CallSyncRepository
 import com.example.arthax.data.local.store.LeadLookupCache
+import com.example.arthax.data.local.store.RemoteConfigStore
 import com.example.arthax.data.local.store.SeenCallStore
+import com.example.arthax.data.local.store.SyncHealthStore
+import com.example.arthax.data.local.store.UnmatchedCallStore
 import com.example.arthax.notification.AppNotifications
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
@@ -31,6 +34,9 @@ class CallReconcileWorker @AssistedInject constructor(
     private val syncRepository: CallSyncRepository,
     private val lookupCache: LeadLookupCache,
     private val seenCalls: SeenCallStore,
+    private val unmatched: UnmatchedCallStore,
+    private val configStore: RemoteConfigStore,
+    private val health: SyncHealthStore,
     private val notifications: AppNotifications,
 ) : CoroutineWorker(appContext, params) {
 
@@ -51,9 +57,12 @@ class CallReconcileWorker @AssistedInject constructor(
     }
 
     override suspend fun doWork(): Result {
-        // Both stores are file-backed and this may be a brand new process.
+        // Every store is file-backed and this may be a brand new process.
         lookupCache.load()
         seenCalls.load()
+        unmatched.load()
+        configStore.load()
+        health.load()
         syncRepository.load()
 
         val reason = inputData.getString(KEY_REASON) ?: "scheduled check"

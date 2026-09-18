@@ -9,6 +9,9 @@ import com.example.arthax.data.local.prefs.AppSettings
 import com.example.arthax.call.CallLogReader
 import com.example.arthax.call.CallLogReconciler
 import com.example.arthax.data.local.store.LeadLookupCache
+import com.example.arthax.data.local.store.RemoteConfigStore
+import com.example.arthax.data.local.store.SyncHealthStore
+import com.example.arthax.data.local.store.UnmatchedCallStore
 import com.example.arthax.data.repository.AuthRepository
 import com.example.arthax.data.repository.EventLogger
 import com.example.arthax.domain.model.CallMode
@@ -18,6 +21,7 @@ import com.example.arthax.recording.RecordingStorage
 import com.example.arthax.work.WorkScheduler
 import com.example.arthax.ui.common.AppPermissions
 import com.example.arthax.ui.common.DeviceSetup
+import com.example.arthax.ui.common.RecordingFolderHints
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,6 +41,9 @@ class SettingsViewModel @Inject constructor(
     private val finder: RecordingFinder,
     private val storage: RecordingStorage,
     private val lookupCache: LeadLookupCache,
+    private val unmatched: UnmatchedCallStore,
+    private val configStore: RemoteConfigStore,
+    private val health: SyncHealthStore,
     private val reconciler: CallLogReconciler,
     private val callLogReader: CallLogReader,
     private val workScheduler: WorkScheduler,
@@ -64,7 +71,18 @@ class SettingsViewModel @Inject constructor(
         val lastCheckSummary: String? = null,
         val loggedOut: Boolean = false,
         val isLoggingOut: Boolean = false,
-    )
+        val consent: AppSettings.Consent = AppSettings.Consent.UNDECIDED,
+        /** Calls parked as "not a lead yet". A count only; the numbers stay on the device. */
+        val waitingForLead: Int = 0,
+        /** Set while a 402 has uploads on hold. */
+        val uploadsPausedUntil: Long? = null,
+        val folderHint: String = "",
+        val folderPickerStart: Uri? = null,
+        val configVersion: Int = 0,
+        val lookbackHours: Int = 0,
+    ) {
+        val callTrackingOn: Boolean get() = consent == AppSettings.Consent.ACCEPTED
+    }
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -96,8 +114,42 @@ class SettingsViewModel @Inject constructor(
                     knownLeadNumbers = lookupCache.leadCount,
                     cachedLookups = lookupCache.size,
                     callLogPermission = callLogReader.hasPermission(),
+                    consent = snapshot.consent,
+                    waitingForLead = unmatched.count,
+                    uploadsPausedUntil = health.current.uploadBlockedUntil
+                        .takeIf { it > System.currentTimeMillis() },
+                    folderHint = RecordingFolderHints.humanHint(configStore.current),
+                    folderPickerStart = RecordingFolderHints.initialTreeUri(configStore.current),
+                    configVersion = configStore.current.version,
+                    lookbackHours = configStore.current.lookbackHours,
                 )
             }
+        }
+    }
+
+    /**
+     * The rep declined call tracking at setup and wants it after all. Sending them back
+     * through onboarding is deliberate: the disclosure has to be read and accepted again,
+     * and the folder still has to be chosen.
+     */
+    fun turnOnCallTracking() {
+        viewModelScope.launch {
+            settings.setConsent(AppSettings.Consent.UNDECIDED)
+            settings.setOnboardingComplete(false)
+            logger.info(LogStage.SETUP, "Call tracking setup reopened from Settings")
+        }
+    }
+
+    /** Stops watching calls. Queued calls are left alone; nothing new is read or uploaded. */
+    fun turnOffCallTracking() {
+        viewModelScope.launch {
+            settings.setConsent(AppSettings.Consent.DECLINED)
+            logger.warn(
+                LogStage.SETUP,
+                "Call tracking switched off — no calls are matched or uploaded",
+                detail = "Turn it back on in Settings > Calls being matched.",
+            )
+            refresh()
         }
     }
 
@@ -112,15 +164,19 @@ class SettingsViewModel @Inject constructor(
         _state.update { it.copy(isCheckingCalls = true, lastCheckSummary = null) }
 
         viewModelScope.launch {
-            val summary = if (!callLogReader.hasPermission()) {
+            val summary = if (!_state.value.callTrackingOn) {
+                "Call tracking is off — accept the disclosure to turn it on."
+            } else if (!callLogReader.hasPermission()) {
                 "Call log permission is not granted — calls cannot be detected."
             } else {
                 val result = reconciler.reconcile("checked by hand")
                 when {
-                    result.matched > 0 ->
-                        "Found ${result.matched} call(s) with your leads."
+                    result.matched + result.recovered > 0 ->
+                        "Found ${result.matched + result.recovered} call(s) with your leads."
                     result.deferred > 0 ->
                         "${result.deferred} call(s) are waiting for a network connection."
+                    result.parked > 0 ->
+                        "Checked ${result.scanned} recent call(s) — ${result.parked} kept in case a lead is added."
                     result.ignored > 0 ->
                         "Checked ${result.scanned} recent call(s) — none were leads."
                     else -> "No new calls since the last check."

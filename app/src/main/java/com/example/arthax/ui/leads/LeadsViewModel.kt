@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.arthax.call.CallLogReconciler
 import com.example.arthax.call.CallTracker
 import com.example.arthax.data.local.prefs.AppSettings
 import com.example.arthax.data.remote.api.ApiResult
@@ -39,6 +40,7 @@ class LeadsViewModel @Inject constructor(
     private val leadsRepository: LeadsRepository,
     private val syncRepository: CallSyncRepository,
     private val callTracker: CallTracker,
+    private val reconciler: CallLogReconciler,
     private val settings: AppSettings,
     private val finder: RecordingFinder,
 ) : ViewModel() {
@@ -187,6 +189,12 @@ class LeadsViewModel @Inject constructor(
                     nextSkip = page.nextSkip
                     lastLoadedAt = System.currentTimeMillis()
 
+                    // A fresh list is the moment a rep most expects a lead they just added to
+                    // pick up the call they made to it earlier. Cheap when nothing is
+                    // waiting, and it runs off this screen's own scope so a slow server
+                    // cannot hold the list up.
+                    if (reset) viewModelScope.launch { runCatching { reconciler.retryUnmatched("leads list refreshed") } }
+
                     _state.update { previous ->
                         // De-duplicate on id: the server can return an overlapping row if a
                         // lead is created while the rep is paging.
@@ -276,7 +284,7 @@ class LeadsViewModel @Inject constructor(
 
     /** The dial intent could not be started — undo the session so it cannot claim a later call. */
     fun onCallLaunchFailed(reason: String) {
-        callTracker.abandonCall(reason)
+        viewModelScope.launch { callTracker.abandonCall(reason) }
         _state.update { it.copy(error = "Could not open the phone dialler", errorDetail = reason) }
     }
 
