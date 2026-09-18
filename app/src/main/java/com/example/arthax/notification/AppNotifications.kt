@@ -74,12 +74,21 @@ class AppNotifications @Inject constructor(
      *
      * Android requires one for a foreground service, and that is the right outcome here:
      * an app watching every call should say so plainly rather than doing it invisibly.
+     *
+     * The text doubles as a status line: how many calls are waiting for a lead and how
+     * many recordings are waiting for the rep, when there are any.
      */
-    fun watchingNotification(): Notification =
+    fun watchingNotification(waitingForLead: Int = 0, needingReview: Int = 0): Notification =
         NotificationCompat.Builder(context, CHANNEL_CALL)
             .setSmallIcon(R.drawable.ic_stat_arthax)
             .setContentTitle("Arthax is running")
-            .setContentText("Watching for calls with your leads")
+            .setContentText(
+                listOfNotNull(
+                    "Watching for calls with your leads",
+                    waitingForLead.takeIf { it > 0 }?.let { "$it waiting for a matching lead" },
+                    needingReview.takeIf { it > 0 }?.let { "$it recording(s) need your review" },
+                ).joinToString(" · "),
+            )
             .setOngoing(true)
             .setSilent(true)
             .setShowWhen(false)
@@ -121,6 +130,46 @@ class AppNotifications @Inject constructor(
         NotificationManagerCompat.from(context).notify(idFor(leadName), notification)
     }
 
+    /**
+     * Refreshes the watcher's status line. Only while the service is in the foreground —
+     * posting an ongoing notification with nothing behind it would leave one the rep can
+     * never dismiss.
+     */
+    fun updateWatching(waitingForLead: Int, needingReview: Int) {
+        if (!canPost()) return
+        NotificationManagerCompat.from(context).notify(
+            CALL_SERVICE_NOTIFICATION_ID,
+            watchingNotification(waitingForLead, needingReview),
+        )
+    }
+
+    /**
+     * A recording was held back for the rep. Low priority on the quiet channel: it wants a
+     * look at some point today, not an interruption during the next call.
+     */
+    fun notifyNeedsReview(leadName: String, reason: String) {
+        if (!canPost()) return
+
+        val text = "$leadName — $reason"
+        val notification = NotificationCompat.Builder(context, CHANNEL_CALL)
+            .setSmallIcon(R.drawable.ic_stat_arthax)
+            .setContentTitle("A recording needs your review")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$text. Open Activity to upload it or discard it."))
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setSilent(true)
+            .setAutoCancel(true)
+            .setContentIntent(openAppIntent())
+            .build()
+
+        NotificationManagerCompat.from(context).notify(BASE_REVIEW_ID + (leadName.hashCode() and 0xFFFF), notification)
+    }
+
+    private fun canPost(): Boolean = ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.POST_NOTIFICATIONS,
+    ) == PackageManager.PERMISSION_GRANTED
+
     private fun openAppIntent(): PendingIntent {
         val intent = Intent(context, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -142,5 +191,6 @@ class AppNotifications @Inject constructor(
         const val HARVEST_NOTIFICATION_ID = 1002
         const val SYNC_NOTIFICATION_ID = 1003
         private const val BASE_FAILURE_ID = 2000
+        private const val BASE_REVIEW_ID = 3000
     }
 }

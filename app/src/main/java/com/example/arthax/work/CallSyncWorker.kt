@@ -8,6 +8,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import kotlinx.coroutines.CancellationException
+import com.example.arthax.data.local.store.SyncHealthStore
 import com.example.arthax.data.repository.CallSyncRepository
 import com.example.arthax.notification.AppNotifications
 import dagger.assisted.Assisted
@@ -30,6 +31,7 @@ class CallSyncWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted params: WorkerParameters,
     private val syncRepository: CallSyncRepository,
+    private val health: SyncHealthStore,
     private val notifications: AppNotifications,
 ) : CoroutineWorker(appContext, params) {
 
@@ -53,8 +55,9 @@ class CallSyncWorker @AssistedInject constructor(
         val pendingId = inputData.getString(KEY_PENDING_ID) ?: return Result.failure()
 
         // The queue lives in a file, and this worker can run in a process that has not
-        // read it yet.
+        // read it yet. The health store carries the upload hold a 402 may have set.
         syncRepository.load()
+        health.load()
 
         // Already delivered and pruned, or discarded by the rep. Nothing left to do.
         if (syncRepository.queue.value.none { it.id == pendingId }) return Result.success()

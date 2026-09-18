@@ -366,6 +366,14 @@ class CallMonitorService : android.app.Service() {
                     )
                 }
 
+            // The status line on the ongoing notification: what is waiting for a lead, and
+            // what is waiting for the rep. Cheap, and only ever posted while this service
+            // is in the foreground.
+            runCatching {
+                val summary = reconciler.summary()
+                notifications.updateWatching(summary.waitingForLead, summary.needingReview)
+            }
+
             if (!gate.finishAndCheckRerun()) return
 
             // The same settle pause the observer applies. The platform writes the call log

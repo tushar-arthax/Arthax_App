@@ -126,10 +126,48 @@ class ApiResultTest {
     @Test
     fun `a validation error stays permanent`() = runTest {
         // The distinction that matters: pushing back is transient, a malformed payload is not.
+        // And it is Unprocessable rather than Rejected, because the sync layer parks an
+        // Unprocessable call for review with the server's words instead of marking it failed.
         val result = safeApiCall<String> { error(422, """{"detail":"lead_id: Field required"}""") }
 
-        assertTrue(result is ApiResult.Failure.Rejected)
+        assertTrue(result is ApiResult.Failure.Unprocessable)
         assertFalse((result as ApiResult.Failure).retryable)
+        assertEquals("lead_id: Field required", result.detail)
+    }
+
+    /**
+     * Out of credits is neither the phone's fault nor permanent. It must not be a
+     * rejection, which would mark the call failed, and it must be told apart from an
+     * ordinary retry, because uploads should pause for a while rather than back off
+     * from ten seconds — the sync layer keys on the type.
+     */
+    @Test
+    fun `402 is blocked, retryable, and carries the server pause`() = runTest {
+        val response = Response.error<String>(
+            402,
+            """{"detail":"Organisation has no credits"}""".toResponseBody("application/json".toMediaTypeOrNull()),
+        )
+        val result = safeApiCall<String> { response }
+
+        assertTrue("expected Blocked, got $result", result is ApiResult.Failure.Blocked)
+        assertTrue((result as ApiResult.Failure).retryable)
+        assertEquals("Organisation has no credits", result.detail)
+    }
+
+    @Test
+    fun `402 reads Retry-After when the server sends one`() = runTest {
+        val raw = okhttp3.Response.Builder()
+            .code(402)
+            .message("Payment Required")
+            .protocol(okhttp3.Protocol.HTTP_1_1)
+            .header("Retry-After", "1800")
+            .request(okhttp3.Request.Builder().url("https://api.arthax.ai/api/calls/x/upload-recording").build())
+            .build()
+        val response = Response.error<String>("{}".toResponseBody("application/json".toMediaTypeOrNull()), raw)
+
+        val result = safeApiCall<String> { response } as ApiResult.Failure.Blocked
+
+        assertEquals(1800, result.retryAfterSeconds)
     }
 
     @Test
@@ -167,7 +205,7 @@ class ApiResultTest {
 
         val result = safeApiCall { error(422, body) }
 
-        assertTrue(result is ApiResult.Failure.Rejected)
+        assertTrue(result is ApiResult.Failure.Unprocessable)
         assertFalse((result as ApiResult.Failure).retryable)
         assertTrue("got: ${result.message}", result.message.contains("Field required"))
         assertTrue("got: ${result.message}", result.message.contains("phone"))

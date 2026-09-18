@@ -39,7 +39,7 @@ sealed interface ApiResult<out T> {
             override val detail: String? = null,
         ) : Failure(message, detail, retryable = false)
 
-        /** 4xx other than 401, including FastAPI's 422 validation errors. */
+        /** 4xx not handled more specifically below — a wrong path, a bad request. */
         data class Rejected(
             val code: Int,
             override val message: String,
@@ -76,8 +76,26 @@ sealed interface ApiResult<out T> {
         ) : Failure(message, detail, retryable = true)
 
         /**
+         * 402: the organisation is out of credits. Nothing is wrong with the call or the
+         * file, and nothing on the phone can fix it — so the upload is neither dropped nor
+         * hammered. It is parked for a while and tried again once someone has topped up.
+         *
+         * Only uploads are paused. Creating the call record costs nothing, and a call that
+         * is in the CRM without its audio is worth far more than one that is nowhere.
+         */
+        data class Blocked(
+            val code: Int,
+            val retryAfterSeconds: Int? = null,
+            override val message: String = "Uploads are paused until the organisation has credits",
+            override val detail: String? = null,
+        ) : Failure(message, detail, retryable = true)
+
+        /**
          * The server understood the request and permanently refused to process the
-         * payload. Distinct from [Server] because retrying is pointless.
+         * payload: a 422 validation error, or the 5xx this backend returns when FFmpeg
+         * cannot decode a file. Distinct from [Server] because retrying is pointless, and
+         * distinct from [Rejected] because a human should look at it — the call goes to the
+         * review queue with the server's own words rather than being marked failed.
          */
         data class Unprocessable(
             val code: Int,
@@ -148,6 +166,24 @@ suspend fun <T : Any> safeApiCall(block: suspend () -> Response<T>): ApiResult<T
                 } else {
                     "Request timed out, will retry"
                 },
+                detail = detail,
+            )
+        }
+
+        code == 402 -> {
+            val detail = response.errorDetail()
+            ApiResult.Failure.Blocked(
+                code = code,
+                retryAfterSeconds = response.retryAfterSeconds(),
+                detail = detail,
+            )
+        }
+
+        code == 422 -> {
+            val detail = response.errorDetail()
+            ApiResult.Failure.Unprocessable(
+                code = code,
+                message = detail ?: "Server could not accept this request",
                 detail = detail,
             )
         }

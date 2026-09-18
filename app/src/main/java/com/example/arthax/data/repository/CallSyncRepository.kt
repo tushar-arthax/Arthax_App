@@ -2,6 +2,8 @@ package com.example.arthax.data.repository
 
 import com.example.arthax.data.local.store.PendingCall
 import com.example.arthax.data.local.store.PendingCallStore
+import com.example.arthax.data.local.store.SeenCallStore
+import com.example.arthax.data.local.store.SyncHealthStore
 import com.example.arthax.data.local.store.SyncState
 import com.example.arthax.data.remote.api.ApiResult
 import com.example.arthax.data.remote.api.ArthaxApi
@@ -18,6 +20,9 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -28,11 +33,17 @@ import javax.inject.Singleton
  * its id, then POST /api/calls/{id}/upload-recording attaches the audio. Each step is
  * persisted before the next is attempted, so a process death or a dead zone resumes from
  * where it stopped rather than starting over or double-posting.
+ *
+ * A recording can be held back between the two steps. When the audio does not fit the
+ * call, or the server refuses the file, the call stays in the CRM without it and the row
+ * waits in [SyncState.NEEDS_REVIEW] for the rep to say "upload anyway" or "not this call".
  */
 @Singleton
 class CallSyncRepository @Inject constructor(
     private val api: ArthaxApi,
     private val store: PendingCallStore,
+    private val seenCalls: SeenCallStore,
+    private val health: SyncHealthStore,
     private val storage: RecordingStorage,
     private val notifications: AppNotifications,
     private val logger: EventLogger,
@@ -62,6 +73,8 @@ class CallSyncRepository @Inject constructor(
      */
     fun outstandingFor(userId: String?): List<PendingCall> = store.outstandingFor(userId)
 
+    fun needingReview(): List<PendingCall> = store.needingReview()
+
     fun existsForSource(uri: String): Boolean = store.existsForSource(uri)
 
     fun existsForCall(callLogId: Long, callLogDate: Long): Boolean =
@@ -71,10 +84,10 @@ class CallSyncRepository @Inject constructor(
         store.upsert(call)
         logger.info(
             LogStage.SYNC,
-            if (call.hasRecording) {
-                "Queued call with ${call.leadName} and its recording"
-            } else {
-                "Queued call with ${call.leadName} (no recording)"
+            when {
+                call.recordingHeld -> "Queued call with ${call.leadName} — its recording is held for review"
+                call.hasRecording -> "Queued call with ${call.leadName} and its recording"
+                else -> "Queued call with ${call.leadName} (no recording)"
             },
             leadId = call.leadId,
             leadName = call.leadName,
@@ -90,12 +103,71 @@ class CallSyncRepository @Inject constructor(
         )
     }
 
+    /**
+     * "Upload anyway": the rep has listened, or trusts the match. The hold is lifted and
+     * the row goes back on the normal path — the upload if the call is already in the CRM,
+     * the call record first if it never got that far.
+     */
+    suspend fun uploadAnyway(id: String) {
+        val call = store.byId(id) ?: return
+        store.update(id) {
+            it.copy(
+                state = if (it.serverCallId != null) SyncState.PENDING_UPLOAD else SyncState.PENDING_CALL_RECORD,
+                reviewReason = null,
+                attempts = 0,
+                lastError = null,
+            )
+        }
+        logger.info(
+            LogStage.SYNC,
+            "Uploading the held recording for ${call.leadName} at your request",
+            leadId = call.leadId,
+            leadName = call.leadName,
+        )
+    }
+
+    /**
+     * "Not this call": the file is someone else's. It is deleted; the call itself stays —
+     * already in the CRM, or still to be posted without audio.
+     */
+    suspend fun notThisCall(id: String) {
+        val call = store.byId(id) ?: return
+        call.localFilePath?.let(storage::delete)
+        store.update(id) {
+            it.copy(
+                state = if (it.serverCallId != null) SyncState.DONE else SyncState.PENDING_CALL_RECORD,
+                localFilePath = null,
+                fileName = null,
+                mimeType = null,
+                sizeBytes = 0,
+                sourceUri = null,
+                audioSeconds = null,
+                reviewReason = null,
+                attempts = 0,
+                lastError = null,
+            )
+        }
+        logger.info(
+            LogStage.SYNC,
+            "Discarded the held recording for ${call.leadName} — the call is kept",
+            leadId = call.leadId,
+            leadName = call.leadName,
+        )
+    }
+
     suspend fun discard(id: String) {
         store.byId(id)?.localFilePath?.let(storage::delete)
         store.remove(id)
     }
 
-    suspend fun pruneDelivered() = store.pruneDelivered(DELIVERED_RETENTION_MILLIS)
+    /**
+     * Forgets delivered calls, but not what they were: each pruned row's identity goes to
+     * the dismissed list so the widened call-log window cannot post it a second time.
+     */
+    suspend fun pruneDelivered() {
+        val pruned = store.pruneDelivered(DELIVERED_RETENTION_MILLIS)
+        if (pruned.isNotEmpty()) seenCalls.rememberAll(pruned)
+    }
 
     /** Advances one queued call by exactly one step. */
     suspend fun sync(id: String): Outcome {
@@ -104,7 +176,7 @@ class CallSyncRepository @Inject constructor(
         return when (call.state) {
             SyncState.PENDING_CALL_RECORD -> createCallRecord(call)
             SyncState.PENDING_UPLOAD -> uploadRecording(call)
-            SyncState.DONE, SyncState.FAILED -> Outcome.Done
+            SyncState.DONE, SyncState.FAILED, SyncState.NEEDS_REVIEW -> Outcome.Done
         }
     }
 
@@ -129,21 +201,29 @@ class CallSyncRepository @Inject constructor(
             durationSeconds = call.durationSeconds,
             createdAt = ApiTime.format(call.endedAt),
             externalId = call.externalId,
+            matchSource = call.matchSource,
         )
 
         return when (val result = safeApiCall { api.createCall(request) }) {
             is ApiResult.Success -> {
                 val serverId = result.data.id
-                val next = if (call.hasRecording) SyncState.PENDING_UPLOAD else SyncState.DONE
+                val next = when {
+                    // The file was held at capture: the call is in, the audio waits.
+                    call.reviewReason != null && call.hasRecording -> SyncState.NEEDS_REVIEW
+                    call.hasRecording -> SyncState.PENDING_UPLOAD
+                    else -> SyncState.DONE
+                }
                 store.update(call.id) {
                     it.copy(serverCallId = serverId, state = next, lastError = null)
                 }
+                health.recordCallPosted()
                 logger.success(
                     LogStage.SYNC,
                     "Call with ${call.leadName} logged to the CRM",
                     leadId = call.leadId,
                     leadName = call.leadName,
-                    detail = "Call id $serverId",
+                    detail = "Call id $serverId" +
+                        if (next == SyncState.NEEDS_REVIEW) ". Its recording is waiting for your decision." else "",
                 )
                 // Keep going immediately when there is audio waiting; the caller re-enters.
                 if (next == SyncState.PENDING_UPLOAD) uploadRecording(store.byId(call.id)!!) else Outcome.Done
@@ -164,6 +244,14 @@ class CallSyncRepository @Inject constructor(
         // The local copy is the only thing still uploadable; the OEM original may be gone.
         if (!file.exists() || file.length() == 0L) {
             return handlePermanent(call, "The saved recording file is missing from this device")
+        }
+
+        // A 402 earlier put uploads on hold. Nothing on the phone can end the hold, so no
+        // request is made — the call record above is unaffected and the work simply backs
+        // off until the hold has passed.
+        val blockedUntil = health.current.uploadBlockedUntil
+        if (blockedUntil > System.currentTimeMillis()) {
+            return Outcome.Retry("Uploads are paused until ${formatTime(blockedUntil)}")
         }
 
         logger.info(
@@ -191,6 +279,7 @@ class CallSyncRepository @Inject constructor(
                 }
                 // Only now is it safe to reclaim the space.
                 storage.delete(path)
+                health.recordUpload()
                 logger.success(
                     LogStage.SYNC,
                     if (result.data.skipped) {
@@ -214,6 +303,30 @@ class CallSyncRepository @Inject constructor(
         failure: ApiResult.Failure,
         action: String,
     ): Outcome {
+        // Out of credits. The call and the file are fine; the organisation is not. Uploads
+        // pause for a while and nothing is counted against this call's retry budget, so a
+        // long lapse cannot turn into a permanently failed call.
+        if (failure is ApiResult.Failure.Blocked) {
+            val pauseMillis = failure.retryAfterSeconds?.let { it * 1_000L } ?: UPLOAD_PAUSE_MILLIS
+            val until = System.currentTimeMillis() + pauseMillis
+            health.setUploadBlockedUntil(until)
+            store.update(call.id) { it.copy(lastError = failure.message) }
+            logger.warn(
+                LogStage.SYNC,
+                "Could not $action for ${call.leadName} — uploads paused until ${formatTime(until)}",
+                leadId = call.leadId,
+                leadName = call.leadName,
+                detail = "The server answered 402: ${failure.detail ?: "the organisation has no credits"}. " +
+                    "Calls are still logged; recordings are sent once credits are added.",
+            )
+            return Outcome.Retry(failure.message)
+        }
+
+        // The server understood and refused, for good. Not "failed" — a human decides.
+        if (failure is ApiResult.Failure.Unprocessable) {
+            return enterReview(call, "Server rejected it: ${failure.detail ?: failure.message}", action)
+        }
+
         val exhausted = call.attempts + 1 >= MAX_ATTEMPTS
 
         return if (failure.retryable && !exhausted) {
@@ -250,6 +363,25 @@ class CallSyncRepository @Inject constructor(
         }
     }
 
+    /**
+     * Parks the row for the rep. The local file is kept — it is the only copy — and the
+     * server's reason is shown verbatim, because "422" tells a rep nothing.
+     */
+    private suspend fun enterReview(call: PendingCall, reason: String, action: String): Outcome {
+        store.update(call.id) {
+            it.copy(state = SyncState.NEEDS_REVIEW, attempts = it.attempts + 1, reviewReason = reason, lastError = null)
+        }
+        logger.warn(
+            LogStage.SYNC,
+            "Could not $action for ${call.leadName} — held for review",
+            leadId = call.leadId,
+            leadName = call.leadName,
+            detail = reason,
+        )
+        notifications.notifyNeedsReview(call.leadName, reason)
+        return Outcome.GaveUp(reason)
+    }
+
     private suspend fun handlePermanent(call: PendingCall, reason: String): Outcome {
         store.update(call.id) { it.copy(state = SyncState.FAILED, lastError = reason) }
         logger.error(
@@ -262,9 +394,15 @@ class CallSyncRepository @Inject constructor(
         return Outcome.GaveUp(reason)
     }
 
+    private fun formatTime(millis: Long): String =
+        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(millis))
+
     private companion object {
         const val FILE_FIELD = "file"
         const val MAX_ATTEMPTS = 8
         val DELIVERED_RETENTION_MILLIS = 3L * 24 * 60 * 60 * 1000
+
+        /** How long a 402 keeps uploads on hold when the server does not say. */
+        const val UPLOAD_PAUSE_MILLIS = 30L * 60 * 1000
     }
 }

@@ -1,9 +1,11 @@
 package com.example.arthax.recording
 
 import android.net.Uri
+import android.os.Build
 import com.example.arthax.core.PhoneNumbers
 import com.example.arthax.data.local.prefs.AppSettings
 import com.example.arthax.data.local.store.PendingCallStore
+import com.example.arthax.data.local.store.RemoteConfigStore
 import com.example.arthax.data.repository.EventLogger
 import com.example.arthax.domain.model.CallWindow
 import com.example.arthax.domain.model.LogStage
@@ -20,7 +22,7 @@ import javax.inject.Singleton
  * Finds the recording the phone made for a given call, and copies it somewhere the app owns.
  *
  * The hard part is not finding a file, it is finding the *right* file at a moment when it is
- * *finished being written*. Four guards do that:
+ * *finished being written*. Five guards do that:
  *
  *  1. Time window — the file's timestamp must fall inside the call, and must not reach past
  *     the point where the next call had already begun. So neither an earlier personal call
@@ -33,13 +35,17 @@ import javax.inject.Singleton
  *     half-written file matters here: the server transcodes with FFmpeg and rejects
  *     anything it cannot decode.
  *  4. Not already claimed — a file already attached to another call is skipped.
+ *  5. Length sanity — the audio has to be about as long as the call. A file that is not is
+ *     still copied, but held for the rep rather than uploaded: see [RecordingSanity].
  */
 @Singleton
 class RecordingHarvester @Inject constructor(
     private val finder: RecordingFinder,
     private val storage: RecordingStorage,
+    private val probe: RecordingDurationProbe,
     private val pendingCalls: PendingCallStore,
     private val settings: AppSettings,
+    private val configStore: RemoteConfigStore,
     private val logger: EventLogger,
 ) {
 
@@ -50,6 +56,11 @@ class RecordingHarvester @Inject constructor(
             val mimeType: String,
             val sizeBytes: Long,
             val sourceUri: String,
+            /** Measured, or estimated from the byte count, or null when neither was possible. */
+            val audioSeconds: Double?,
+            /** The recorder wrote the number into the file name: the strongest identity there is. */
+            val namedForNumber: Boolean,
+            val verdict: RecordingSanity.Verdict,
         ) : Result
 
         data object AlreadyCaptured : Result
@@ -87,12 +98,19 @@ class RecordingHarvester @Inject constructor(
             return Result.GrantLost
         }
 
-        val timeoutSeconds = settings.snapshot.first().scanTimeoutSeconds
+        // A call that ended a while ago — a catch-up after the phone was off, or a call
+        // whose lead was only added later — has a recorder that finished long since. One
+        // look is enough; polling for a minute per call would turn a backlog of a day's
+        // calls into an hour of waiting, and the stability check has nothing to catch.
+        val settled = System.currentTimeMillis() - window.endedAt > SETTLED_AFTER_MILLIS
+        val timeoutSeconds = if (settled) 0 else settings.snapshot.first().scanTimeoutSeconds
+
         logger.info(
             LogStage.DETECT,
             "Looking for the recording of the call with $leadTag",
             leadId = window.leadId,
             leadName = window.leadName,
+            detail = if (settled) "The call ended a while ago, so the folder is checked once." else null,
         )
 
         // uri -> size seen on the previous poll, for the stability check.
@@ -102,7 +120,7 @@ class RecordingHarvester @Inject constructor(
         var loggedFirstScan = false
         var lastScan: RecordingFinder.ScanResult? = null
 
-        while (System.currentTimeMillis() < deadline) {
+        do {
             val scan = finder.findCandidatesSince(treeUri, window.recordingNotBefore)
             lastScan = scan
 
@@ -150,22 +168,28 @@ class RecordingHarvester @Inject constructor(
                     continue
                 }
 
-                val previous = previousSizes[key]
-                if (previous == null || previous != candidate.sizeBytes) {
-                    previousSizes[key] = candidate.sizeBytes
-                    sawCandidateButUnstable = true
-                    continue
+                if (!settled) {
+                    val previous = previousSizes[key]
+                    if (previous == null || previous != candidate.sizeBytes) {
+                        previousSizes[key] = candidate.sizeBytes
+                        sawCandidateButUnstable = true
+                        continue
+                    }
                 }
 
-                // Two identical readings — the recorder has closed the file.
+                // Two identical readings — the recorder has closed the file. (Or the call is
+                // old enough that it must have.)
                 return capture(window, candidate)
             }
 
+            if (System.currentTimeMillis() >= deadline) break
             delay(POLL_INTERVAL_MILLIS)
-        }
+        } while (true)
 
         val message = if (sawCandidateButUnstable) {
             "Found a recording but it never finished writing within ${timeoutSeconds}s"
+        } else if (settled) {
+            "No recording found for the earlier call with $leadTag"
         } else {
             "No recording appeared for the call with $leadTag within ${timeoutSeconds}s"
         }
@@ -200,20 +224,6 @@ class RecordingHarvester @Inject constructor(
                 return Result.CopyFailed(reason)
             }
 
-        // Worth surfacing: a recording far shorter than the call usually means the dialler
-        // only started recording partway through, and the rep should know.
-        if (window.durationSeconds > SUSPICIOUS_DURATION_THRESHOLD_SECONDS &&
-            copy.length() < MIN_PLAUSIBLE_BYTES_PER_SECOND * window.durationSeconds
-        ) {
-            logger.warn(
-                LogStage.DETECT,
-                "Recording looks shorter than the call — uploading it anyway",
-                leadId = window.leadId,
-                leadName = window.leadName,
-                detail = "${copy.length()} bytes for a ${window.durationSeconds}s call.",
-            )
-        }
-
         // Says *why* this file was chosen, not just that it was. When two calls happen a
         // minute apart this line is the difference between "the right audio went to the
         // right lead" being something you can check and something you have to hope.
@@ -222,18 +232,48 @@ class RecordingHarvester @Inject constructor(
             PhoneNumbers.matchKey(window.phone),
         )
 
-        logger.success(
-            LogStage.DETECT,
-            "Captured ${candidate.name} for ${window.leadName.ifBlank { window.leadId }}",
-            leadId = window.leadId,
-            leadName = window.leadName,
-            detail = "${copy.length() / 1024} KB, " +
-                if (matchedByName) {
-                    "the file is named for this number"
-                } else {
-                    "closest file to the end of this call (${formatTime(candidate.lastModified)})"
-                },
+        // Measured from the container when possible; a byte-count guess otherwise. The
+        // verdict is made against the call log's talk time, with the ring allowance the
+        // server configured for this manufacturer — a phone that records from dial-out
+        // legitimately produces audio longer than the talk time by the ringing.
+        val measured = probe.durationSeconds(copy)
+        val audioSeconds = measured ?: RecordingSanity.estimateSeconds(copy.length(), candidate.mimeType)
+        val config = configStore.current
+        val verdict = RecordingSanity.check(
+            audioSeconds = audioSeconds,
+            estimated = measured == null,
+            talkSeconds = window.durationSeconds,
+            connected = window.durationSeconds > 0,
+            ringAllowanceSec = config.ringAllowanceSecFor(Build.MANUFACTURER),
+            slackSec = config.maxDurationSlackSec,
         )
+
+        val length = audioSeconds?.let { String.format(Locale.US, "%.0fs of audio, ", it) }.orEmpty()
+        val chosenBecause = if (matchedByName) {
+            "the file is named for this number"
+        } else {
+            "closest file to the end of this call (${formatTime(candidate.lastModified)})"
+        }
+
+        when (verdict) {
+            is RecordingSanity.Verdict.Upload -> logger.success(
+                LogStage.DETECT,
+                "Captured ${candidate.name} for ${window.leadName.ifBlank { window.leadId }}",
+                leadId = window.leadId,
+                leadName = window.leadName,
+                detail = "${copy.length() / 1024} KB, $length$chosenBecause",
+            )
+
+            is RecordingSanity.Verdict.Review -> logger.warn(
+                LogStage.DETECT,
+                "Recording for ${window.leadName.ifBlank { window.leadId }} held for review — " +
+                    "it does not fit the call",
+                leadId = window.leadId,
+                leadName = window.leadName,
+                detail = "${verdict.reason}. ${copy.length() / 1024} KB, $chosenBecause. " +
+                    "The call is logged without it; decide on the Activity screen.",
+            )
+        }
 
         return Result.Captured(
             file = copy,
@@ -241,6 +281,9 @@ class RecordingHarvester @Inject constructor(
             mimeType = candidate.mimeType,
             sizeBytes = copy.length(),
             sourceUri = candidate.documentUri.toString(),
+            audioSeconds = audioSeconds,
+            namedForNumber = matchedByName,
+            verdict = verdict,
         )
     }
 
@@ -250,10 +293,7 @@ class RecordingHarvester @Inject constructor(
     private companion object {
         const val POLL_INTERVAL_MILLIS = 2_000L
 
-        /** Below this, an odd byte count tells us nothing useful. */
-        const val SUSPICIOUS_DURATION_THRESHOLD_SECONDS = 20L
-
-        /** ~4 kbps floor; even AMR-NB clears this comfortably. */
-        const val MIN_PLAUSIBLE_BYTES_PER_SECOND = 500L
+        /** Past this the recorder has certainly closed the file; one scan is enough. */
+        const val SETTLED_AFTER_MILLIS = 5L * 60 * 1000
     }
 }
