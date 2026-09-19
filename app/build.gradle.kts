@@ -6,6 +6,9 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
+    // Reads app/google-services.json (committed: it holds only the public Firebase project
+    // ids, no secret) and generates the resources the Firebase SDK initialises from.
+    alias(libs.plugins.google.services)
 }
 
 /**
@@ -38,8 +41,8 @@ android {
         minSdk = 26
         targetSdk = 36
         // Must always exceed the last build of the previous app (30).
-        versionCode = 31
-        versionName = "3.0.0"
+        versionCode = 32
+        versionName = "3.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -149,6 +152,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.service)
+    implementation(libs.androidx.lifecycle.process)
     implementation(libs.kotlinx.coroutines.android)
 
     // DI
@@ -164,6 +168,11 @@ dependencies {
 
     // Background work
     implementation(libs.androidx.work.runtime.ktx)
+
+    // Push
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
+    implementation(libs.play.services.base)
 
     // Networking
     implementation(libs.retrofit)

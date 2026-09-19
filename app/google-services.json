@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "600612507428",
+    "project_id": "arthax-d13b2",
+    "storage_bucket": "arthax-d13b2.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:600612507428:android:e209604ed3e1f1edebedb1",
+        "android_client_info": {
+          "package_name": "com.arthax.callrecorderapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAHhvO9es75dDE9ylzQXKe0w4ix7-sfucw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:600612507428:android:368ae9d0fd939ef0ebedb1",
+        "android_client_info": {
+          "package_name": "com.callrecorder.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAHhvO9es75dDE9ylzQXKe0w4ix7-sfucw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
