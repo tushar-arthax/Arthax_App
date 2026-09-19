@@ -19,6 +19,7 @@ import ai.arthax.app.data.repository.EventLogger
 import ai.arthax.app.di.ApplicationScope
 import ai.arthax.app.domain.model.LogStage
 import ai.arthax.app.notification.AppNotifications
+import ai.arthax.app.push.PushRegistration
 import ai.arthax.app.recording.RecordingStorage
 import ai.arthax.app.work.WorkScheduler
 import dagger.hilt.android.HiltAndroidApp
@@ -56,6 +57,8 @@ class ArthaxApplication : Application(), Configuration.Provider {
     @Inject lateinit var logger: EventLogger
 
     @Inject lateinit var crashRecorder: CrashRecorder
+
+    @Inject lateinit var push: PushRegistration
 
     @Inject @ApplicationScope lateinit var appScope: CoroutineScope
 
@@ -136,8 +139,13 @@ class ArthaxApplication : Application(), Configuration.Provider {
                 // Standing safety nets, in case a broadcast was missed or the process was
                 // killed mid-scan. Both are no-ops when there is nothing to do.
                 workScheduler.ensurePeriodicWork()
-
             }
+
+            // Whether or not signed in: the token is fetched now and registered at whichever
+            // of "token" and "sign-in" comes second. Its own runCatching, so a phone without
+            // Google services never affects anything above.
+            runCatching { push.ensureRegistered() }
+                .onFailure { Log.w("ArthaxApplication", "Push registration skipped", it) }
         }.onFailure {
             Log.e("ArthaxApplication", "Startup recovery failed", it)
         }

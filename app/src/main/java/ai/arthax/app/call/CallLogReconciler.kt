@@ -334,11 +334,12 @@ class CallLogReconciler @Inject constructor(
 
             val tapped = clickToCall?.takeIf { it.matches(entry.direction.api, entry.number, entry.startedAt) }
             val resolution = if (tapped != null) {
-                // The rep chose this lead moments ago. That beats a fresh lookup when two
-                // leads share the number, and tells the CRM the call came from the app.
+                // The rep chose this lead moments ago — or accepted a colleague's request
+                // for it. That beats a fresh lookup when two leads share the number, and
+                // tells the CRM the call came from the app, and how it was asked for.
                 clickToCall = null
                 settings.setClickToCall(null)
-                LeadResolver.Resolution.Lead(tapped.leadId, tapped.leadName, MatchSource.CLICK_TO_CALL)
+                LeadResolver.Resolution.Lead(tapped.leadId, tapped.leadName, tapped.source)
             } else {
                 askedThisPass[numberKey]
                     ?: leadResolver.resolve(entry.number).also {
@@ -568,6 +569,7 @@ class CallLogReconciler @Inject constructor(
                 "outcome=${if (call.connected) "connected" else "not_picked"}, " +
                 when (lead.source) {
                     MatchSource.CLICK_TO_CALL -> "the lead you tapped CALL on"
+                    MatchSource.WEB -> "the lead a colleague asked you to call from the CRM"
                     MatchSource.LEAD_CACHE -> "matched from the offline list (CRM unreachable)"
                     MatchSource.BY_PHONE -> "matched live against the CRM"
                 } +

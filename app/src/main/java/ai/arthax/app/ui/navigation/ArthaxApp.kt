@@ -12,6 +12,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -26,6 +27,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import ai.arthax.app.ui.common.FullScreenLoading
+import ai.arthax.app.ui.leads.LeadFocus
 import ai.arthax.app.ui.leads.LeadsScreen
 import ai.arthax.app.ui.login.LoginScreen
 import ai.arthax.app.ui.logs.LogsScreen
@@ -45,6 +47,7 @@ object Routes {
 
 @Composable
 fun ArthaxApp(
+    navRequests: NavRequests,
     modifier: Modifier = Modifier,
     rootViewModel: RootViewModel = hiltViewModel(),
 ) {
@@ -68,7 +71,7 @@ fun ArthaxApp(
             modifier = modifier,
         )
 
-        RootViewModel.Destination.Main -> MainScaffold(modifier)
+        RootViewModel.Destination.Main -> MainScaffold(navRequests, modifier)
     }
 }
 
@@ -99,18 +102,35 @@ private fun AuthNavHost(
     }
 }
 
-private enum class MainTab(
+enum class MainTab(
     val label: String,
     val icon: ImageVector,
+    /** The `open_tab` value a notification intent carries. */
+    val extra: String,
 ) {
-    LEADS("Leads", Icons.Default.Person),
-    LOGS("Activity", Icons.AutoMirrored.Filled.List),
-    SETTINGS("Settings", Icons.Default.Settings),
+    LEADS("Leads", Icons.Default.Person, "leads"),
+    LOGS("Activity", Icons.AutoMirrored.Filled.List, "activity"),
+    SETTINGS("Settings", Icons.Default.Settings, "settings"),
+    ;
+
+    companion object {
+        fun fromExtra(raw: String?): MainTab? = entries.firstOrNull { it.extra == raw?.trim()?.lowercase() }
+    }
 }
 
 @Composable
-private fun MainScaffold(modifier: Modifier = Modifier) {
+private fun MainScaffold(navRequests: NavRequests, modifier: Modifier = Modifier) {
     var selectedTab by rememberSaveable { mutableStateOf(MainTab.LEADS) }
+
+    // A notification tap. The tab switch happens here; the lead part rides down to the
+    // Leads screen, keyed by nonce so the same request is applied exactly once.
+    val navRequest by navRequests.pending.collectAsStateWithLifecycle()
+    LaunchedEffect(navRequest?.nonce) {
+        navRequest?.let { selectedTab = it.tab }
+    }
+    val leadFocus = navRequest
+        ?.takeIf { it.tab == MainTab.LEADS && (it.leadId != null || it.search != null) }
+        ?.let { LeadFocus(leadId = it.leadId, search = it.search, nonce = it.nonce) }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -130,6 +150,7 @@ private fun MainScaffold(modifier: Modifier = Modifier) {
         when (selectedTab) {
             MainTab.LEADS -> LeadsScreen(
                 onOpenSettings = { selectedTab = MainTab.SETTINGS },
+                focus = leadFocus,
                 modifier = Modifier.padding(padding),
             )
 

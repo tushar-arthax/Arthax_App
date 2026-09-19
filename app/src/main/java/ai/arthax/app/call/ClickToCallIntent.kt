@@ -1,12 +1,14 @@
 package ai.arthax.app.call
 
 import ai.arthax.app.core.PhoneNumbers
+import ai.arthax.app.domain.model.MatchSource
 
 /**
- * "The rep just tapped CALL on this lead."
+ * "The rep just tapped CALL on this lead" — or accepted a call the CRM asked for.
  *
  * Remembered for one purpose: telling the CRM that the call which follows was placed from
- * the app (`match_source = click_to_call`) and filing it against the lead the rep actually
+ * the app (`match_source = click_to_call`, or `web` when a colleague requested it from the
+ * CRM and the phone was woken by push) and filing it against the lead the rep actually
  * chose — which matters when two leads share a number. It is not a second source of truth
  * for what happened on the line; the call log still decides that.
  *
@@ -18,6 +20,8 @@ data class ClickToCallIntent(
     val phone: String,
     /** When CALL was tapped. */
     val at: Long,
+    /** How the call was started; what the CRM is told as `match_source`. */
+    val source: MatchSource = MatchSource.CLICK_TO_CALL,
 ) {
 
     /**

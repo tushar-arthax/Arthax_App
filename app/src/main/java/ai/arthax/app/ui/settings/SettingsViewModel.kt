@@ -16,6 +16,7 @@ import ai.arthax.app.data.repository.AuthRepository
 import ai.arthax.app.data.repository.EventLogger
 import ai.arthax.app.domain.model.CallMode
 import ai.arthax.app.domain.model.LogStage
+import ai.arthax.app.push.PushRegistration
 import ai.arthax.app.recording.RecordingFinder
 import ai.arthax.app.recording.RecordingStorage
 import ai.arthax.app.work.WorkScheduler
@@ -47,6 +48,7 @@ class SettingsViewModel @Inject constructor(
     private val reconciler: CallLogReconciler,
     private val callLogReader: CallLogReader,
     private val workScheduler: WorkScheduler,
+    private val push: PushRegistration,
     private val logger: EventLogger,
 ) : ViewModel() {
 
@@ -80,6 +82,10 @@ class SettingsViewModel @Inject constructor(
         val folderPickerStart: Uri? = null,
         val configVersion: Int = 0,
         val lookbackHours: Int = 0,
+        val notifyNewLeads: Boolean = true,
+        val notifyReminders: Boolean = true,
+        val notifyGeneral: Boolean = true,
+        val pushState: PushRegistration.State = PushRegistration.State.PENDING,
     ) {
         val callTrackingOn: Boolean get() = consent == AppSettings.Consent.ACCEPTED
     }
@@ -95,6 +101,9 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             val snapshot = settings.snapshot.first()
             val (name, error) = describeFolder(snapshot.recordingsTreeUri)
+            val notify = settings.notificationPreferences.first()
+            val pushState = runCatching { push.state(authRepository.isLoggedIn) }
+                .getOrDefault(PushRegistration.State.NO_GOOGLE_SERVICES)
 
             _state.update {
                 it.copy(
@@ -122,8 +131,33 @@ class SettingsViewModel @Inject constructor(
                     folderPickerStart = RecordingFolderHints.initialTreeUri(configStore.current),
                     configVersion = configStore.current.version,
                     lookbackHours = configStore.current.lookbackHours,
+                    notifyNewLeads = notify.newLeads,
+                    notifyReminders = notify.reminders,
+                    notifyGeneral = notify.general,
+                    pushState = pushState,
                 )
             }
+        }
+    }
+
+    fun setNotifyNewLeads(on: Boolean) {
+        viewModelScope.launch {
+            settings.setNotifyNewLeads(on)
+            _state.update { it.copy(notifyNewLeads = on) }
+        }
+    }
+
+    fun setNotifyReminders(on: Boolean) {
+        viewModelScope.launch {
+            settings.setNotifyReminders(on)
+            _state.update { it.copy(notifyReminders = on) }
+        }
+    }
+
+    fun setNotifyGeneral(on: Boolean) {
+        viewModelScope.launch {
+            settings.setNotifyGeneral(on)
+            _state.update { it.copy(notifyGeneral = on) }
         }
     }
 

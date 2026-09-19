@@ -13,6 +13,7 @@ import ai.arthax.app.data.repository.CallSyncRepository
 import ai.arthax.app.data.repository.LeadsRepository
 import ai.arthax.app.domain.model.CallMode
 import ai.arthax.app.domain.model.Lead
+import ai.arthax.app.push.FollowUpReminders
 import ai.arthax.app.recording.RecordingFinder
 import ai.arthax.app.ui.common.AppPermissions
 import ai.arthax.app.ui.common.DeviceSetup
@@ -43,6 +44,8 @@ class LeadsViewModel @Inject constructor(
     private val reconciler: CallLogReconciler,
     private val settings: AppSettings,
     private val finder: RecordingFinder,
+    private val refreshSignal: LeadsRefreshSignal,
+    private val followUps: FollowUpReminders,
 ) : ViewModel() {
 
     /**
@@ -70,6 +73,8 @@ class LeadsViewModel @Inject constructor(
         val callMode: CallMode = CallMode.DIRECT,
         val warnings: List<Warning> = emptyList(),
         val pendingCalls: Int = 0,
+        /** The lead a notification pointed at; drawn with an outline until the rep moves on. */
+        val highlightedLeadId: String? = null,
     ) {
         /** True once every page the server has for this filter is on screen. */
         val hasLoadedEverything: Boolean
@@ -101,7 +106,28 @@ class LeadsViewModel @Inject constructor(
     init {
         observePendingCalls()
         observeQuery()
+        observeRefreshRequests()
         load(reset = true, showSpinner = true)
+    }
+
+    /** A push said the list changed — a lead was assigned. Reload quietly. */
+    private fun observeRefreshRequests() {
+        viewModelScope.launch {
+            refreshSignal.events.collect { refresh() }
+        }
+    }
+
+    /**
+     * A notification tap that names a lead. There is no per-lead screen, so the surest way
+     * to put that lead in front of the rep is to search for its number; the id outlines it.
+     */
+    fun focusLead(focus: LeadFocus) {
+        _state.update { it.copy(highlightedLeadId = focus.leadId) }
+        if (focus.search != null) {
+            onQueryChanged(focus.search)
+        } else {
+            refresh()
+        }
     }
 
     private fun observePendingCalls() {
@@ -194,6 +220,13 @@ class LeadsViewModel @Inject constructor(
                     // waiting, and it runs off this screen's own scope so a slow server
                     // cannot hold the list up.
                     if (reset) viewModelScope.launch { runCatching { reconciler.retryUnmatched("leads list refreshed") } }
+
+                    // Only an unfiltered load is the whole list; arming timers from a search
+                    // result would cancel the reminders of every lead it left out.
+                    if (searchAtRequestTime.isBlank()) {
+                        val known = if (reset) page.leads else _state.value.leads + page.leads
+                        viewModelScope.launch { runCatching { followUps.replan(known) } }
+                    }
 
                     _state.update { previous ->
                         // De-duplicate on id: the server can return an overlapping row if a

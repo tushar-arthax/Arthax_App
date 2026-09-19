@@ -68,6 +68,12 @@
 -keep,allowobfuscation @interface com.squareup.moshi.JsonClass
 -keep class ai.arthax.app.data.local.store.** { *; }
 
+# --- Firebase Cloud Messaging -----------------------------------------------------------
+# The Firebase and Play services artifacts ship their own consumer rules, and the messaging
+# service is kept because the manifest names it. Nothing extra is needed; this block exists
+# so nobody adds a broad `-keep class com.google.firebase.**` that would undo the shrinking.
+# Verified with dexdump: ArthaxMessagingService and the Moshi *JsonAdapter classes survive.
+
 # --- Compile-only annotations ---------------------------------------------------------
 # Tink (pulled in by security-crypto) references ErrorProne annotations that are
 # compileOnly and never packaged. They carry no runtime behaviour, so R8 can ignore them.

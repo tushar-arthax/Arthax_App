@@ -91,6 +91,52 @@
         </activity>
 
         <!--
+          The Call action on a push notification. A notification can only start an
+          activity, a service or a broadcast, and only a foreground activity may open the
+          dialler on Android 10+ - so this invisible one takes the tap, records which lead
+          was asked for, starts the call and finishes. Its own task and out of recents, so
+          the rep is never left looking at an empty screen.
+        -->
+        <activity
+            android:name=".push.DialRequestActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Arthax.Invisible" />
+
+        <!-- The Dismiss action on a dial request. -->
+        <receiver
+            android:name=".push.NotificationDismissReceiver"
+            android:exported="false" />
+
+        <!--
+          Firebase Cloud Messaging. Data messages from the CRM: a colleague's click-to-call,
+          lead assignments, reminders, and "sync now" from the fleet dashboard. Every
+          payload is decoded defensively (push/PushMessage.kt); the app never crashes on
+          a message it does not understand.
+        -->
+        <service
+            android:name=".notification.ArthaxMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!--
+          Defaults for the rare notification-style message shown by Firebase itself while
+          the app is in the background (the backend's broadcast path). Without these the
+          icon is a white square and the channel is one the rep cannot find in Settings.
+        -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_stat_arthax" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="general" />
+
+        <!--
           The watcher. Long-lived on purpose: it is the only mechanism Android guarantees
           will keep running, and every alternative was measured failing on real hardware -
           PHONE_STATE broadcasts are not delivered on Xiaomi without autostart, and

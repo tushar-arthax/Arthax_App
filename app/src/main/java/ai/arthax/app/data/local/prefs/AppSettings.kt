@@ -9,9 +9,13 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import ai.arthax.app.call.ClickToCallIntent
 import ai.arthax.app.domain.model.CallMode
+import ai.arthax.app.domain.model.MatchSource
+import ai.arthax.app.push.NotificationPreferences
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "arthax_settings")
@@ -80,6 +84,7 @@ class AppSettings(private val context: Context) {
             leadName = p[KEY_C2C_LEAD_NAME].orEmpty(),
             phone = p[KEY_C2C_PHONE].orEmpty(),
             at = at,
+            source = MatchSource.fromApiOrDefault(p[KEY_C2C_SOURCE]),
         )
     }
 
@@ -89,12 +94,81 @@ class AppSettings(private val context: Context) {
             p.remove(KEY_C2C_LEAD_NAME)
             p.remove(KEY_C2C_PHONE)
             p.remove(KEY_C2C_AT)
+            p.remove(KEY_C2C_SOURCE)
         } else {
             p[KEY_C2C_LEAD_ID] = intent.leadId
             p[KEY_C2C_LEAD_NAME] = intent.leadName
             p[KEY_C2C_PHONE] = intent.phone
             p[KEY_C2C_AT] = intent.at
+            p[KEY_C2C_SOURCE] = intent.source.api
         }
+    }
+
+    /**
+     * Which push notifications the rep wants. Calls requested from the CRM are not in here
+     * on purpose: they are the one message a colleague is actively waiting on, so they are
+     * always delivered and Settings shows the switch locked on.
+     */
+    val notificationPreferences: Flow<NotificationPreferences> = context.dataStore.data.map { p ->
+        NotificationPreferences(
+            newLeads = p[KEY_NOTIFY_NEW_LEADS] ?: true,
+            reminders = p[KEY_NOTIFY_REMINDERS] ?: true,
+            general = p[KEY_NOTIFY_GENERAL] ?: true,
+        )
+    }
+
+    suspend fun setNotifyNewLeads(on: Boolean) = context.dataStore.edit { p -> p[KEY_NOTIFY_NEW_LEADS] = on }
+
+    suspend fun setNotifyReminders(on: Boolean) = context.dataStore.edit { p -> p[KEY_NOTIFY_REMINDERS] = on }
+
+    suspend fun setNotifyGeneral(on: Boolean) = context.dataStore.edit { p -> p[KEY_NOTIFY_GENERAL] = on }
+
+    /**
+     * The device's push token, and the token the server has been given for the current
+     * sign-in. The two differ while an upload is still owed: the token arrived before the
+     * rep signed in, or the request failed and is retried on the next start.
+     */
+    data class FcmTokens(val token: String?, val registeredToken: String?)
+
+    val fcmTokens: Flow<FcmTokens> = context.dataStore.data.map { p ->
+        FcmTokens(token = p[KEY_FCM_TOKEN], registeredToken = p[KEY_FCM_REGISTERED])
+    }
+
+    suspend fun setFcmTokens(tokens: FcmTokens) = context.dataStore.edit { p ->
+        if (tokens.token == null) p.remove(KEY_FCM_TOKEN) else p[KEY_FCM_TOKEN] = tokens.token
+        if (tokens.registeredToken == null) p.remove(KEY_FCM_REGISTERED) else p[KEY_FCM_REGISTERED] = tokens.registeredToken
+    }
+
+    /**
+     * Follow-ups and meetings the rep has already been reminded of, keyed `lead:dueAt`.
+     *
+     * Two things can remind: a push from the server and the on-device timer armed from the
+     * lead list. Whichever fires first records itself here and the other stays quiet, so a
+     * follow-up is never announced twice. Entries older than [REMINDED_RETENTION_MILLIS]
+     * are dropped on every write, so the set stays a few dozen strings.
+     */
+    suspend fun remindedKeys(): Set<String> =
+        (context.dataStore.data.map { it[KEY_REMINDED] ?: emptySet() }).first()
+            .mapNotNull { it.substringBeforeLast('|', "").takeIf(String::isNotEmpty) }
+            .toSet()
+
+    /** Records the reminder. Returns false when it had already been given. */
+    suspend fun markReminded(key: String, now: Long): Boolean {
+        var added = false
+        context.dataStore.edit { p ->
+            val kept = (p[KEY_REMINDED] ?: emptySet())
+                .filter { entry ->
+                    val at = entry.substringAfterLast('|', "").toLongOrNull() ?: 0L
+                    now - at < REMINDED_RETENTION_MILLIS
+                }
+                .toMutableSet()
+            if (kept.none { it.substringBeforeLast('|', "") == key }) {
+                kept += "$key|$now"
+                added = true
+            }
+            p[KEY_REMINDED] = kept
+        }
+        return added
     }
 
     val recordingsTreeUri: Flow<String?> = context.dataStore.data.map { it[KEY_TREE_URI] }
@@ -211,6 +285,16 @@ class AppSettings(private val context: Context) {
         private val KEY_C2C_LEAD_NAME = stringPreferencesKey("click_to_call_lead_name")
         private val KEY_C2C_PHONE = stringPreferencesKey("click_to_call_phone")
         private val KEY_C2C_AT = longPreferencesKey("click_to_call_at")
+        private val KEY_C2C_SOURCE = stringPreferencesKey("click_to_call_source")
+        private val KEY_NOTIFY_NEW_LEADS = booleanPreferencesKey("notify_new_leads")
+        private val KEY_NOTIFY_REMINDERS = booleanPreferencesKey("notify_reminders")
+        private val KEY_NOTIFY_GENERAL = booleanPreferencesKey("notify_general")
+        private val KEY_FCM_TOKEN = stringPreferencesKey("fcm_token")
+        private val KEY_FCM_REGISTERED = stringPreferencesKey("fcm_registered_token")
+        private val KEY_REMINDED = stringSetPreferencesKey("reminded_follow_ups")
+
+        /** A week: longer than any reminder can be scheduled ahead, short enough to stay small. */
+        private const val REMINDED_RETENTION_MILLIS = 7L * 24 * 60 * 60 * 1000
 
         /**
          * How long the harvester keeps looking for the recording after hang-up.

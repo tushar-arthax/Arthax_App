@@ -2,6 +2,7 @@ package ai.arthax.app.ui.settings
 
 import android.content.Intent
 import android.net.Uri
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -30,6 +31,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -48,6 +50,7 @@ import ai.arthax.app.BuildConfig
 import ai.arthax.app.core.ApiConfig
 import ai.arthax.app.data.local.prefs.AppSettings
 import ai.arthax.app.domain.model.CallMode
+import ai.arthax.app.push.PushRegistration
 import ai.arthax.app.ui.common.AppPermissions
 import ai.arthax.app.ui.common.DeviceSetup
 import ai.arthax.app.ui.common.ErrorBanner
@@ -295,6 +298,70 @@ fun SettingsScreen(
             )
         }
 
+        SettingsSection(title = "Notifications") {
+            NotificationSwitch(
+                title = "Calls requested from CRM",
+                description = "Always on. When a colleague clicks Call on a lead in ArthaX, " +
+                    "this phone is asked to place the call — they are waiting on it.",
+                checked = true,
+                enabled = false,
+                onChange = {},
+            )
+            NotificationSwitch(
+                title = "New leads",
+                description = "When a lead is assigned to you.",
+                checked = state.notifyNewLeads,
+                onChange = viewModel::setNotifyNewLeads,
+            )
+            NotificationSwitch(
+                title = "Reminders",
+                description = "Follow-ups and meetings, ten minutes before. Also armed on " +
+                    "this phone from your lead list, in case the server's reminder does not arrive.",
+                checked = state.notifyReminders,
+                onChange = viewModel::setNotifyReminders,
+            )
+            NotificationSwitch(
+                title = "General notifications",
+                description = "Everything else the CRM sends.",
+                checked = state.notifyGeneral,
+                onChange = viewModel::setNotifyGeneral,
+            )
+
+            Spacer(Modifier.height(10.dp))
+            StatusLine(
+                ok = state.pushState == PushRegistration.State.REGISTERED,
+                text = when (state.pushState) {
+                    PushRegistration.State.REGISTERED -> "Push: registered \u2713"
+                    PushRegistration.State.NOT_SIGNED_IN -> "Push: not registered — sign in"
+                    PushRegistration.State.NO_GOOGLE_SERVICES -> "Push: no Google services on this phone"
+                    PushRegistration.State.PENDING -> "Push: not registered yet — retried at next start"
+                },
+            )
+            if (state.pushState == PushRegistration.State.NO_GOOGLE_SERVICES) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "Calls requested from the CRM cannot reach this phone. Everything " +
+                        "else works; reminders are still armed from your lead list.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            TextButton(
+                onClick = {
+                    runCatching {
+                        settingsLauncher.launch(
+                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
+                        )
+                    }
+                },
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
+            ) {
+                Text("Manage in system settings")
+            }
+        }
+
         SettingsSection(title = "Background access") {
             StatusLine(
                 ok = state.permissionsOk,
@@ -491,6 +558,36 @@ private fun StatusLine(ok: Boolean, text: String) {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurface,
         )
+    }
+}
+
+@Composable
+private fun NotificationSwitch(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit,
+    enabled: Boolean = true,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
 }
 

@@ -11,6 +11,8 @@ import androidx.work.OutOfQuotaPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import ai.arthax.app.data.local.store.RemoteConfigStore
+import ai.arthax.app.push.FollowUpPlanner
+import kotlinx.coroutines.flow.first
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -121,7 +123,54 @@ class WorkScheduler @Inject constructor(
     fun cancelAll() {
         workManager.cancelAllWorkByTag(TAG_RECONCILE)
         workManager.cancelAllWorkByTag(TAG_HEALTH)
+        workManager.cancelAllWorkByTag(TAG_FOLLOW_UP)
     }
+
+    /**
+     * Arms one on-device follow-up reminder — the fallback for a push that never arrives.
+     *
+     * Unique by lead and due time with KEEP, so re-planning on every leads refresh is free
+     * when nothing changed. Tagged by lead as well, so a follow-up that was moved can have
+     * its old timer cancelled (see [staleFollowUpWork]) without a table of what was armed.
+     */
+    fun enqueueFollowUpReminder(reminder: FollowUpPlanner.Reminder, now: Long) {
+        val request = OneTimeWorkRequestBuilder<FollowUpReminderWorker>()
+            .setInitialDelay(reminder.delayFrom(now), TimeUnit.MILLISECONDS)
+            .setInputData(
+                Data.Builder()
+                    .putString(FollowUpReminderWorker.KEY_LEAD_ID, reminder.leadId)
+                    .putString(FollowUpReminderWorker.KEY_LEAD_NAME, reminder.leadName)
+                    .putString(FollowUpReminderWorker.KEY_PHONE, reminder.phone)
+                    .putLong(FollowUpReminderWorker.KEY_DUE_AT, reminder.dueAt)
+                    .build(),
+            )
+            .addTag(TAG_FOLLOW_UP)
+            .addTag(followUpLeadTag(reminder.leadId))
+            .addTag(followUpNameTag(reminder.workName))
+            .build()
+
+        workManager.enqueueUniqueWork(reminder.workName, ExistingWorkPolicy.KEEP, request)
+    }
+
+    /** The push for this follow-up arrived first; the timer has nothing left to say. */
+    fun cancelFollowUpReminder(workName: String) = workManager.cancelUniqueWork(workName)
+
+    /**
+     * Cancels every armed reminder for a lead other than [keepWorkName] — the one that
+     * matches the lead's current follow-up date. Null keeps nothing: the date was cleared.
+     */
+    suspend fun cancelStaleFollowUpWork(leadId: String, keepWorkName: String?) {
+        val armed = runCatching { workManager.getWorkInfosByTagFlow(followUpLeadTag(leadId)).first() }
+            .getOrDefault(emptyList())
+        armed
+            .filter { !it.state.isFinished }
+            .filter { keepWorkName == null || followUpNameTag(keepWorkName) !in it.tags }
+            .forEach { workManager.cancelWorkById(it.id) }
+    }
+
+    private fun followUpLeadTag(leadId: String) = "$TAG_FOLLOW_UP_LEAD_PREFIX$leadId"
+
+    private fun followUpNameTag(workName: String) = "$TAG_FOLLOW_UP_NAME_PREFIX$workName"
 
     /** Sends one queued call to the server: create the record, then attach the audio. */
     fun enqueueSync(pendingCallId: String) {
@@ -172,6 +221,9 @@ class WorkScheduler @Inject constructor(
         const val TAG_SYNC = "sync"
         const val TAG_RECONCILE = "reconcile"
         const val TAG_HEALTH = "health"
+        const val TAG_FOLLOW_UP = "follow_up"
+        private const val TAG_FOLLOW_UP_LEAD_PREFIX = "follow_up_lead:"
+        private const val TAG_FOLLOW_UP_NAME_PREFIX = "follow_up_name:"
 
         /** WorkManager's floor for periodic work. */
         const val MIN_PERIOD_MINUTES = 15L
@@ -184,5 +236,6 @@ class WorkScheduler @Inject constructor(
         const val REASON_BACK_ONLINE = "back online"
         const val REASON_CALL_LOG_CHANGED = "the call log changed"
         const val REASON_RESUMED = "the app came to the foreground"
+        const val REASON_PUSH = "push"
     }
 }

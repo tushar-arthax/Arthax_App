@@ -15,6 +15,7 @@ import ai.arthax.app.data.remote.dto.LoginRequest
 import ai.arthax.app.data.remote.dto.SendOtpRequest
 import ai.arthax.app.data.remote.dto.UserDto
 import ai.arthax.app.domain.model.LogStage
+import ai.arthax.app.push.PushRegistration
 import ai.arthax.app.work.WorkScheduler
 import kotlinx.coroutines.flow.StateFlow
 import javax.inject.Inject
@@ -29,6 +30,7 @@ class AuthRepository @Inject constructor(
     private val settings: AppSettings,
     private val workScheduler: WorkScheduler,
     private val reconciler: dagger.Lazy<CallLogReconciler>,
+    private val push: dagger.Lazy<PushRegistration>,
     private val logger: EventLogger,
 ) {
 
@@ -84,6 +86,10 @@ class AuthRepository @Inject constructor(
                 workScheduler.ensurePeriodicWork()
                 CallMonitorService.start(context, "signed in")
 
+                // The push token usually arrived before the rep signed in; now there is a
+                // session to register it under. Never blocks the sign-in.
+                runCatching { push.get().onSignedIn() }
+
                 logger.success(
                     LogStage.AUTH,
                     "Signed in as ${body.user?.fullName ?: normalized}",
@@ -133,6 +139,10 @@ class AuthRepository @Inject constructor(
      */
     suspend fun logout() {
         logger.info(LogStage.AUTH, "Signing out")
+
+        // Before the bearer token goes: pushes for this rep must stop reaching a handset
+        // someone else may pick up next. Failures are ignored — see PushRegistration.
+        runCatching { push.get().onSignedOut() }
 
         when (val result = safeApiCall { api.logout() }) {
             is ApiResult.Success -> logger.success(LogStage.AUTH, "Session ended on the server")

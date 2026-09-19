@@ -2,8 +2,9 @@
 
 Links a sales rep's phone calls to leads in their employer's Arthax CRM: watches the
 phone's call log, matches each call to a lead by number, posts the call, and uploads the
-recording the phone's own dialler saved. Kotlin, Hilt, Retrofit + Moshi, Compose,
-WorkManager. `applicationId` is `com.callrecorder.app` (the successor to the previous
+recording the phone's own dialler saved. Receives push from the CRM: a colleague's
+click-to-call wakes the phone and dials the lead. Kotlin, Hilt, Retrofit + Moshi, Compose,
+WorkManager, Firebase Cloud Messaging. `applicationId` is `com.callrecorder.app` (the successor to the previous
 call-recorder app, signed with the same key so it installs as an update); the source
 package is `ai.arthax.app`.
 
@@ -13,6 +14,13 @@ package is `ai.arthax.app`.
   `build-tools;36.0.0` (`sdkmanager "platforms;android-36.1" "build-tools;36.0.0"`).
 - `local.properties` at the repo root with `sdk.dir=/path/to/android/sdk` (gitignored).
 - The Gradle wrapper (9.4.1) downloads itself on first run.
+- `app/google-services.json` is committed: it holds the Firebase project ids and the
+  Android API key, which are public client identifiers, not secrets (Firebase project
+  `arthax-d13b2`, Android app registered under `com.callrecorder.app`). If the project is
+  ever re-created, download the new file from Firebase console > Project settings > Your
+  apps and replace it; the `com.google.gms.google-services` plugin turns it into resources
+  at build time. The backend signs its sends with the *server* key
+  (`firebase-credentials.json` on the backend, never in this repo).
 
 ## Signing
 
@@ -61,6 +69,44 @@ CI (`.github/workflows/android.yml`) runs the first command on every push.
 10. An hourly heartbeat (`POST /api/mobile/sync-health`) reports the phone's health and
     picks up config changes (`GET /api/mobile/config`); all knobs fall back to built-in
     defaults.
+
+## Push notifications
+
+Firebase Cloud Messaging, **data messages only** (`push/PushMessage.kt` is the contract,
+`notification/ArthaxMessagingService.kt` the entry point). Every payload carries a `type`;
+anything the app cannot decode is logged and dropped, never thrown — the service runs on a
+thread whose crash takes the call watcher with it. The old `action=DIAL_LEAD` /
+`phone_number` payload is still accepted and treated as `dial`.
+
+| `type` | Fields | On the phone |
+| --- | --- | --- |
+| `dial` | `lead_id`, `phone`, `lead_name`, `requested_by`, `request_id` | App on screen: confirm sheet (Call / Not now). Otherwise heads-up notification "Call *lead*" / "Requested by *name* from ArthaX" with **Call** and **Dismiss**. Call goes through `DialRequestActivity`, which records the request so the call is posted with `match_source=web`. De-duplicated on `request_id` (last 20). Always delivered; cannot be switched off. |
+| `lead_assigned` | `lead_id`, `lead_name`, `phone`, `assigned_by` | "New lead assigned: *name*" with a **Call** action (`match_source=click_to_call`); tap opens Leads with the number searched and the lead outlined. The list refreshes. |
+| `follow_up_due` | `lead_id`, `lead_name`, `phone`, `due_at` (ISO), `minutes_left` | Reminders channel: "Follow-up in N min: *name*", **Call** when a phone is present. Recorded in the reminded set so the on-device timer for the same follow-up stays quiet. |
+| `meeting_reminder` | `meeting_id`, `title`, `scheduled_at`, `minutes_left`, `lead_id?`, `phone?` | "Meeting in N min: *title*", **Call** when a phone is present; tap opens Leads. |
+| `notification` | `title`, `body`, `notification_type`, `entity_type?`, `entity_id?` | General channel, shown as given; tap opens the app. |
+| `sync_now` | `reason` | Enqueues a call-log reconcile through WorkManager and sends a heartbeat. Nothing shown. |
+| `config_updated` | `version` | Fetches the server config if this version differs. Nothing shown. |
+| `device_alert` | `health` (`warning`/`critical`), `message` | "Call tracking needs attention" + message; tap opens Settings. |
+
+Channels: `calls_from_crm` (high, sound + vibration), `leads` (default), `reminders`
+(high), `general` (default), alongside the existing call-tracking and uploads channels.
+Settings has switches for new leads, reminders and general (calls from the CRM are shown
+locked on), the push registration state, and a link to the system notification settings.
+No full-screen intents are used.
+
+**Token registration.** The token is persisted as soon as Firebase issues it and sent to
+`PATCH /api/users/me/fcm-token` at whichever of "token" and "sign-in" comes second
+(`push/FcmTokenRegistrar.kt`); a failed send is retried at the next start. Signing out
+deletes the Firebase token so pushes for the previous rep stop reaching a shared handset;
+the next sign-in registers a fresh one. The heartbeat reports `permissions.push`. A phone
+without Google Play services runs everything except push; Settings says so.
+
+**On-device follow-up fallback.** Push is not delivered on every phone, so each time the
+lead list loads, a WorkManager timer is armed ten minutes before every follow-up in the
+next 48 hours (`push/FollowUpPlanner.kt`, unique name `followup:<lead_id>:<due_at>`,
+KEEP), re-planned on every refresh and cancelled when the date moves. Push and timer share
+the reminded set, so a follow-up is announced once.
 
 ## Play submission notes
 

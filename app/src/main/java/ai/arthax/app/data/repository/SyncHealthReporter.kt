@@ -20,6 +20,7 @@ import ai.arthax.app.data.remote.api.safeApiCall
 import ai.arthax.app.data.remote.dto.ApiTime
 import ai.arthax.app.data.remote.dto.MobileSyncHealthRequest
 import ai.arthax.app.domain.model.LogStage
+import ai.arthax.app.push.FcmTokenRegistrar
 import ai.arthax.app.recording.RecordingFinder
 import ai.arthax.app.ui.common.DeviceSetup
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -54,6 +55,7 @@ class SyncHealthReporter @Inject constructor(
     private val finder: RecordingFinder,
     private val tokenStore: SecureTokenStore,
     private val remoteConfig: RemoteConfigRepository,
+    private val pushRegistrar: FcmTokenRegistrar,
     private val logger: EventLogger,
 ) {
 
@@ -161,6 +163,9 @@ class SyncHealthReporter @Inject constructor(
                 .getOrDefault(false),
             "battery_unrestricted" to runCatching { !DeviceSetup.isBatteryOptimised(context) }
                 .getOrDefault(false),
+            // Not a permission, but the same question for the dashboard: can the server
+            // reach this phone? The map is stored as JSON, so a new key costs nothing.
+            "push" to runCatching { pushRegistrar.isRegistered() }.getOrDefault(false),
         )
     }
 

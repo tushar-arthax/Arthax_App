@@ -1,6 +1,7 @@
 package ai.arthax.app.ui.leads
 
 import android.content.ActivityNotFoundException
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -65,15 +66,34 @@ import java.util.concurrent.TimeUnit
 /** How many rows from the end to start fetching the next page. */
 private const val LOAD_MORE_THRESHOLD = 4
 
+/** A notification tap pointing at one lead: outline it by id, find it by search. */
+data class LeadFocus(
+    val leadId: String?,
+    val search: String?,
+    val nonce: Long,
+)
+
 @Composable
 fun LeadsScreen(
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
+    focus: LeadFocus? = null,
     viewModel: LeadsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val listState = rememberLazyListState()
+
+    LaunchedEffect(focus?.nonce) {
+        focus?.let(viewModel::focusLead)
+    }
+
+    // Once the highlighted lead is on the list, bring it into view.
+    LaunchedEffect(state.highlightedLeadId, state.leads) {
+        val id = state.highlightedLeadId ?: return@LaunchedEffect
+        val index = state.leads.indexOfFirst { it.id == id }
+        if (index >= 0) listState.animateScrollToItem(index)
+    }
 
     // On every return to the screen, not just the first composition: permissions and the
     // folder grant can be changed in system settings while the app is away, and the lead
@@ -199,6 +219,7 @@ fun LeadsScreen(
                 items(state.leads, key = { it.id }) { lead ->
                     LeadCard(
                         lead = lead,
+                        highlighted = lead.id == state.highlightedLeadId,
                         onCall = { viewModel.onCallClicked(lead) },
                     )
                 }
@@ -309,6 +330,7 @@ private fun SetupWarningCard(
 @Composable
 private fun LeadCard(
     lead: Lead,
+    highlighted: Boolean,
     onCall: () -> Unit,
 ) {
     Card(
@@ -316,6 +338,8 @@ private fun LeadCard(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         shape = RoundedCornerShape(14.dp),
+        // The lead a notification pointed at, so it stands out from the rows around it.
+        border = if (highlighted) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
     ) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.Top) {
