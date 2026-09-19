@@ -322,6 +322,24 @@ class CallSyncRepository @Inject constructor(
             return Outcome.Retry(failure.message)
         }
 
+        // The session, not the call, was refused. Nothing about this row is wrong, and
+        // marking it FAILED used to strand every queued call the moment a token expired —
+        // the rep signed back in and found "Session expired" on each one, needing a manual
+        // retry apiece. The row is left where it is, its retry budget untouched; the next
+        // reconcile after sign-in re-arms it (see CallLogReconciler.resumeStalledUploads),
+        // and the sync worker stands down while nobody is signed in.
+        if (failure is ApiResult.Failure.Unauthorized) {
+            store.update(call.id) { it.copy(lastError = failure.message) }
+            logger.warn(
+                LogStage.SYNC,
+                "Could not $action for ${call.leadName} — the session was refused; the call waits for the next sign-in",
+                leadId = call.leadId,
+                leadName = call.leadName,
+                detail = failure.detail,
+            )
+            return Outcome.Retry(failure.message)
+        }
+
         // The server understood and refused, for good. Not "failed" — a human decides.
         if (failure is ApiResult.Failure.Unprocessable) {
             return enterReview(call, "Server rejected it: ${failure.detail ?: failure.message}", action)

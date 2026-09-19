@@ -84,6 +84,14 @@ class CallLogReader @Inject constructor(
      *
      * Ordered ascending so the caller can walk forward and move its watermarks as it goes;
      * if it is interrupted halfway the unprocessed tail is simply picked up next time.
+     *
+     * The cap keeps the *newest* rows. The provider is read newest-first and the list is
+     * turned round afterwards, because reading oldest-first and stopping at the limit had
+     * a failure mode with no way out: once a rep's three-day window held more rows than
+     * the limit, the newest calls were beyond it on every pass, the watermark could not
+     * advance past rows it never saw, and so the window never moved either. Dropping the
+     * oldest rows instead costs nothing — they are the ones already in the queue or the
+     * dismissed list — and a truncated read is logged so it is visible from the device.
      */
     fun entriesSince(
         sinceMillis: Long,
@@ -108,8 +116,9 @@ class CallLogReader @Inject constructor(
                 // provider with "Invalid token LIMIT" - it validates the clause rather than
                 // passing it to SQLite. That threw on every read, and because the result was
                 // swallowed it looked exactly like "no new calls": no call was ever detected.
-                // The cap is applied while walking the cursor instead.
-                "${CallLog.Calls.DATE} ASC, ${CallLog.Calls._ID} ASC",
+                // The cap is applied while walking the cursor instead — newest first, see
+                // the note above, then reversed for the caller.
+                "${CallLog.Calls.DATE} DESC, ${CallLog.Calls._ID} DESC",
             )?.use { cursor ->
                 val idIdx = cursor.getColumnIndexOrThrow(CallLog.Calls._ID)
                 val numberIdx = cursor.getColumnIndexOrThrow(CallLog.Calls.NUMBER)
@@ -117,7 +126,7 @@ class CallLogReader @Inject constructor(
                 val dateIdx = cursor.getColumnIndexOrThrow(CallLog.Calls.DATE)
                 val durationIdx = cursor.getColumnIndexOrThrow(CallLog.Calls.DURATION)
 
-                buildList {
+                val newestFirst = buildList {
                     while (cursor.moveToNext() && size < limit) {
                         add(
                             Entry(
@@ -130,6 +139,10 @@ class CallLogReader @Inject constructor(
                         )
                     }
                 }
+                if (newestFirst.size >= limit && !cursor.isAfterLast) {
+                    Log.w(TAG, "Call log window holds more than $limit rows; the oldest were not read")
+                }
+                oldestFirst(newestFirst)
             }.orEmpty()
         }.onFailure {
             // Never swallow this. A silent empty list here is indistinguishable from "no new
@@ -179,17 +192,25 @@ class CallLogReader @Inject constructor(
         )?.use { if (it.moveToFirst()) it.getLong(0) else 0L } ?: 0L
     }.onFailure { Log.e(TAG, "Reading the newest call log id failed", it) }.getOrDefault(0L)
 
-    private companion object {
-        const val TAG = "ArthaxCallLog"
+    companion object {
+        private const val TAG = "ArthaxCallLog"
 
         /**
          * Generous, but bounded so a first run after a long gap cannot stall.
          *
          * Raised when the reconcile started re-reading a trailing window rather than only
          * what is past the watermark: most rows in that window are recognised and skipped in
-         * memory, but they still have to be *returned* to be recognised. Truncating here
-         * would drop the newest calls, since rows come back oldest first.
+         * memory, but they still have to be *returned* to be recognised. Sized to the
+         * dismissed list (2,000 rows), which is the most the window can hold and still have
+         * every row accounted for; a rep would need nearly 700 calls a day to reach it.
          */
-        const val DEFAULT_LIMIT = 500
+        const val DEFAULT_LIMIT = 2_000
+
+        /**
+         * The order the reconciler walks rows in: by start time, then by id. Applied to the
+         * newest-first read above, and pure so the capping rule is pinned by a unit test.
+         */
+        fun oldestFirst(rows: List<Entry>): List<Entry> =
+            rows.sortedWith(compareBy({ it.startedAt }, { it.id }))
     }
 }

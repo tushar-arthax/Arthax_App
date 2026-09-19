@@ -8,6 +8,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import kotlinx.coroutines.CancellationException
+import ai.arthax.app.data.local.prefs.SecureTokenStore
 import ai.arthax.app.data.local.store.SyncHealthStore
 import ai.arthax.app.data.repository.CallSyncRepository
 import ai.arthax.app.notification.AppNotifications
@@ -32,6 +33,7 @@ class CallSyncWorker @AssistedInject constructor(
     @Assisted params: WorkerParameters,
     private val syncRepository: CallSyncRepository,
     private val health: SyncHealthStore,
+    private val tokenStore: SecureTokenStore,
     private val notifications: AppNotifications,
 ) : CoroutineWorker(appContext, params) {
 
@@ -61,6 +63,13 @@ class CallSyncWorker @AssistedInject constructor(
 
         // Already delivered and pruned, or discarded by the rep. Nothing left to do.
         if (syncRepository.queue.value.none { it.id == pendingId }) return Result.success()
+
+        // Nobody signed in: every request would go out without a token and come back 401.
+        // The queue row is untouched and is re-armed by the first reconcile after the rep
+        // signs in again (unique work with KEEP, so a finished entry does not block it).
+        // failure(), not retry(): retrying would only poll the server with no token until
+        // the backoff hit its five hour ceiling.
+        if (!tokenStore.isLoggedIn) return Result.failure()
 
         val outcome = try {
             syncRepository.sync(pendingId)
