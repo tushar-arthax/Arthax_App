@@ -1,0 +1,133 @@
+# Ships every push to `main` to Google Play.
+#
+#   push to main  ->  tests  ->  signed AAB  ->  Play INTERNAL track   (automatic)
+#                                             ->  Play PRODUCTION track (needs approval)
+#
+# Internal is automatic because it reaches only the testers listed in Play Console; a bad
+# build costs a few people a reinstall. Production reaches every rep's phone, so it waits
+# on the `play-production` GitHub Environment - add required reviewers to it in
+# Settings -> Environments and no push can go live without a person clicking approve.
+#
+# SECRETS (repository settings -> Secrets and variables -> Actions)
+#   RELEASE_KEYSTORE_BASE64   base64 of the release keystore (`base64 -i arthax-release.keystore`)
+#   RELEASE_KEYSTORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD
+#   PLAY_SERVICE_ACCOUNT_JSON JSON key of a Google Cloud service account that Play Console
+#                             lists under Users and permissions with "Release to production,
+#                             exclude devices, and use Play App Signing" on this app.
+#
+# VERSION CODE: taken from the run number so two pushes can never collide; versionName is
+# whatever app/build.gradle.kts says. A first release must already exist on the Play
+# listing (the API cannot create the app itself), and its versionCode must be lower than
+# the run number - adjust VERSION_CODE_OFFSET once if it is not.
+name: Release to Play
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+
+concurrency:
+  group: play-release
+  cancel-in-progress: false
+
+env:
+  VERSION_CODE_OFFSET: 100
+
+jobs:
+  build:
+    name: Test and build signed bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    outputs:
+      version_code: ${{ steps.version.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-36 platforms;android-36.1 build-tools;36.0.0 platform-tools"
+          accept-android-sdk-licenses: true
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Restore the release keystore
+        run: |
+          mkdir -p keystore
+          echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > keystore/arthax-release.jks
+          cat > keystore.properties <<EOF
+          storeFile=keystore/arthax-release.jks
+          storePassword=${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.RELEASE_KEY_ALIAS }}
+          keyPassword=${{ secrets.RELEASE_KEY_PASSWORD }}
+          EOF
+
+      - id: version
+        name: Derive the version code
+        run: echo "code=$(( ${{ github.run_number }} + $VERSION_CODE_OFFSET ))" >> "$GITHUB_OUTPUT"
+
+      - name: Unit tests and signed bundle
+        run: >
+          ./gradlew testReleaseUnitTest bundleRelease
+          -PversionCodeOverride=${{ steps.version.outputs.code }}
+          --console=plain --no-daemon
+
+      - name: Release notes from the commit
+        run: |
+          mkdir -p whatsnew
+          git log -1 --pretty=%s%n%n%b | head -c 480 > whatsnew/whatsnew-en-US
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle
+          path: |
+            app/build/outputs/bundle/release/app-release.aab
+            whatsnew/
+          if-no-files-found: error
+
+  internal:
+    name: Play internal track
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundle
+      - uses: r0adkll/upload-google-play@v1.1.3
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.arthax.app
+          releaseFiles: app/build/outputs/bundle/release/app-release.aab
+          track: internal
+          status: completed
+          whatsNewDirectory: whatsnew
+          releaseName: "build ${{ needs.build.outputs.version_code }} (${{ github.sha }})"
+
+  production:
+    name: Play production track
+    needs: [build, internal]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: play-production
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundle
+      - uses: r0adkll/upload-google-play@v1.1.3
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.arthax.app
+          releaseFiles: app/build/outputs/bundle/release/app-release.aab
+          track: production
+          # Staged: a fifth of the reps first, so a bad build is visible before it is everywhere.
+          # Raise to 100% from Play Console (Release -> Production -> Manage rollout).
+          status: inProgress
+          userFraction: 0.2
+          whatsNewDirectory: whatsnew
+          releaseName: "build ${{ needs.build.outputs.version_code }} (${{ github.sha }})"

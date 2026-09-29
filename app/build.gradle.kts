@@ -33,15 +33,18 @@ android {
     }
 
     defaultConfig {
-        // The successor to the previous call-recorder app: same applicationId and the same
-        // signing key, so Play and the phones treat it as an update and every installed
-        // copy migrates in place. The source package (ai.arthax.app, the namespace above) is
-        // deliberately different; only the applicationId is identity to Android.
-        applicationId = "com.callrecorder.app"
+        // A new identity on purpose: the sideloaded call-recorder app was
+        // com.callrecorder.app, and Play would have accepted that, but the store listing
+        // URL carries this id forever, so it is the brand's. Consequence: the old copies on
+        // reps' phones are NOT updated in place and must be uninstalled once this is out.
+        // The source package (ai.arthax.app, the namespace above) is independent of it.
+        applicationId = "com.arthax.app"
         minSdk = 26
         targetSdk = 36
         // Must always exceed the last build of the previous app (30).
-        versionCode = 33
+        // CI passes -PversionCodeOverride (see .github/workflows/release.yml) so every push to
+        // main gets a strictly increasing code; local builds keep the number below.
+        versionCode = (project.findProperty("versionCodeOverride") as String?)?.toInt() ?: 33
         versionName = "3.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
