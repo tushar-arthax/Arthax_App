@@ -104,6 +104,13 @@ fun LeadDetailScreen(
 
     LaunchedEffect(leadId) { viewModel.load(leadId) }
 
+    // Notes the timeline did not report are folded in here rather than in the view model,
+    // because it is a presentation concern: both halves are already loaded and neither
+    // request changes.
+    val journey = remember(state.timeline, state.lead) {
+        mergeNotesIntoJourney(state.timeline, state.lead?.noteHistory.orEmpty())
+    }
+
     // The lead is gone; there is nothing left to show.
     LaunchedEffect(state.deleted) {
         if (state.deleted) onBack(true)
@@ -289,7 +296,7 @@ fun LeadDetailScreen(
                     // absence. The rail now renders its own empty and failed states.
                     Spacer(Modifier.height(24.dp))
                     LeadJourneySection(
-                        events = state.timeline,
+                        events = journey,
                         isLoading = state.isLoadingTimeline,
                         isLoadingMore = state.isLoadingMoreTimeline,
                         hasMore = state.hasMoreTimeline,
@@ -299,12 +306,18 @@ fun LeadDetailScreen(
                         onRetry = viewModel::retryTimeline,
                     )
 
-                    CallHistorySection(
+                    // Driven by the timeline, not by `state.calls`. The calls list is
+                    // scoped to the signed-in rep, so on a lead two people have worked it
+                    // showed two rows where the CRM shows twenty-six. The rep's own calls
+                    // are still passed in, to put the recording and the AI analysis on the
+                    // entries this device is allowed to fetch.
+                    LeadActivitySection(
+                        events = journey,
                         calls = state.calls,
-                        isLoading = state.isLoadingCalls,
-                        isLoadingMore = state.isLoadingMoreCalls,
-                        hasMore = state.hasMoreCalls,
-                        onLoadMore = viewModel::loadMoreCalls,
+                        isLoading = state.isLoadingTimeline,
+                        isLoadingMore = state.isLoadingMoreTimeline,
+                        hasMore = state.hasMoreTimeline,
+                        onLoadMore = viewModel::loadMoreTimeline,
                     )
                 }
             }
@@ -654,73 +667,6 @@ private fun FollowUpCard(lead: Lead, onSet: () -> Unit, onComplete: () -> Unit) 
     }
 }
 
-@Composable
-private fun CallHistorySection(
-    calls: List<CallRecord>,
-    isLoading: Boolean,
-    isLoadingMore: Boolean,
-    hasMore: Boolean,
-    onLoadMore: () -> Unit,
-) {
-    Spacer(Modifier.height(22.dp))
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            text = "CALL HISTORY",
-            style = OverlineStyle,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f),
-        )
-        if (calls.isNotEmpty()) {
-            MetaChip(
-                text = buildString {
-                    append(if (calls.size == 1) "1 CALL" else "${calls.size} CALLS")
-                    if (hasMore) append("+")
-                },
-                color = MaterialTheme.colorScheme.primary,
-            )
-        }
-    }
-    Spacer(Modifier.height(10.dp))
-
-    when {
-        isLoading -> Row(verticalAlignment = Alignment.CenterVertically) {
-            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-            Spacer(Modifier.width(10.dp))
-            Text(
-                "Loading call history",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        calls.isEmpty() -> Text(
-            "No calls logged with this lead yet.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-
-        else -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            calls.forEach { call -> CallHistoryRow(call) }
-
-            if (hasMore) {
-                TextButton(
-                    onClick = onLoadMore,
-                    enabled = !isLoadingMore,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    if (isLoadingMore) {
-                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Loading")
-                    } else {
-                        Text("Show earlier calls")
-                    }
-                }
-            }
-        }
-    }
-}
-
 /**
  * One call against this lead.
  *
@@ -729,7 +675,7 @@ private fun CallHistorySection(
  * history in order, and a modal per call would mean opening and closing one for each.
  */
 @Composable
-private fun CallHistoryRow(call: CallRecord) {
+internal fun LeadCallCard(call: CallRecord, heading: String? = null) {
     var showTranscript by remember { mutableStateOf(false) }
     var showAssessment by remember { mutableStateOf(false) }
 
@@ -741,6 +687,15 @@ private fun CallHistoryRow(call: CallRecord) {
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Column(Modifier.padding(14.dp)) {
+            heading?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val colour = if (call.connected) statusColors.success else statusColors.warning
                 StatusPill(
@@ -776,7 +731,8 @@ private fun CallHistoryRow(call: CallRecord) {
                 )
             }
 
-            call.agentName?.let {
+            // Only when the heading has not already named them.
+            call.agentName?.takeIf { heading == null }?.let {
                 Spacer(Modifier.height(6.dp))
                 Text(it, style = MaterialTheme.typography.titleSmall)
             }

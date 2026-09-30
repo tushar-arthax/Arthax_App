@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import ai.arthax.app.call.CallTracker
 import ai.arthax.app.data.local.prefs.AppSettings
 import ai.arthax.app.data.remote.api.ApiResult
+import ai.arthax.app.ui.common.humanMessage
 import ai.arthax.app.core.ApiConfig
 import ai.arthax.app.data.remote.dto.LeadUpdateRequest
 import ai.arthax.app.data.repository.CallHistoryRepository
@@ -250,8 +251,11 @@ class LeadDetailViewModel @Inject constructor(
                     it.copy(
                         isLoadingTimeline = false,
                         isLoadingMoreTimeline = false,
-                        timelineError = result.message,
-                        timelineErrorDetail = result.detail,
+                        // The documented meaning of the status, not the server's wording:
+                        // a reassigned lead and a deleted one both used to surface as
+                        // something no rep could act on.
+                        timelineError = result.humanMessage(),
+                        timelineErrorDetail = null,
                     )
                 }
             }

@@ -53,6 +53,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import ai.arthax.app.domain.model.LeadNote
 import ai.arthax.app.domain.model.LeadTimelineEvent
 import ai.arthax.app.ui.calls.absoluteDateTime
 import ai.arthax.app.ui.theme.OverlineStyle
@@ -341,6 +342,43 @@ private fun JourneyNotice(
             }
         }
     }
+}
+
+
+/**
+ * The journey, with the lead's own notes folded in.
+ *
+ * The timeline route reports notes as `note_added` events, so normally this adds nothing.
+ * It matters when it does not: the route is newer than the notes themselves, an older note
+ * has no event behind it, and a rep whose timeline comes back short would otherwise see a
+ * journey with the notes missing and no sign any were ever written.
+ *
+ * A note already reported is recognised by the event's own `meta.note_id` rather than by
+ * comparing text, so a note and its event never appear as two stops.
+ */
+internal fun mergeNotesIntoJourney(
+    events: List<LeadTimelineEvent>,
+    notes: List<LeadNote>,
+): List<LeadTimelineEvent> {
+    if (notes.isEmpty()) return events
+
+    val alreadyReported = events.mapNotNullTo(mutableSetOf()) { it.noteId }
+    val ids = events.mapTo(mutableSetOf()) { it.id }
+
+    val missing = notes
+        .filterNot { it.id in alreadyReported || it.id in ids }
+        .map { note ->
+            LeadTimelineEvent(
+                id = note.id,
+                type = "note_added",
+                occurredAtMillis = note.createdAtMillis,
+                actor = note.authorName,
+                text = note.text,
+                noteId = note.id,
+            )
+        }
+
+    return if (missing.isEmpty()) events else events + missing
 }
 
 /**

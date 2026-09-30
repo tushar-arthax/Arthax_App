@@ -7,6 +7,25 @@
   "client": [
     {
       "client_info": {
+        "mobilesdk_app_id": "1:600612507428:android:0d2133693cb9d4c9ebedb1",
+        "android_client_info": {
+          "package_name": "com.arthax.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAHhvO9es75dDE9ylzQXKe0w4ix7-sfucw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
         "mobilesdk_app_id": "1:600612507428:android:e209604ed3e1f1edebedb1",
         "android_client_info": {
           "package_name": "com.arthax.callrecorderapp"

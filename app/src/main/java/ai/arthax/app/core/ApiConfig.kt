@@ -72,7 +72,7 @@ object ApiConfig {
      * Timeline page. That route takes a `limit` and no offset, so "load more" asks for a
      * bigger page rather than the next one — see [ApiConfig.TIMELINE_PAGE_STEP].
      */
-    const val TIMELINE_PAGE_SIZE = 25
+    const val TIMELINE_PAGE_SIZE = 50
     const val TIMELINE_PAGE_STEP = 25
     const val TIMELINE_MAX = 200
 

@@ -39,6 +39,14 @@ data class Lead(
     val buyerIntent: String? = null,
     val createdAt: Long? = null,
 
+    /**
+     * Notes typed against this lead, newest first.
+     *
+     * Separate from [notes], which is a single blob of imported form answers and anything
+     * written before the CRM kept notes as records of their own.
+     */
+    val noteHistory: List<LeadNote> = emptyList(),
+
     /** Org-defined extra columns, already flattened to text for display. */
     val customFields: Map<String, String> = emptyMap(),
 ) {
@@ -116,7 +124,32 @@ data class LeadTimelineEvent(
     val occurredAtMillis: Long?,
     val actor: String?,
     val text: String?,
+    /**
+     * The note this event is about, from the event's own `meta.note_id`.
+     *
+     * Used to recognise a note the timeline has already reported, so the same note is not
+     * shown twice when the lead's `notes_history` is merged in beside it.
+     */
+    val noteId: String? = null,
+
+    /**
+     * The call this event reports, from `meta.call_id`.
+     *
+     * The timeline is the only complete record of a lead's calls: `GET /api/calls/` is
+     * scoped to the signed-in rep, so a lead worked by two people shows each of them only
+     * their own. This id is what lets a call the rep *can* see be matched up and shown with
+     * its recording and AI analysis, while a colleague's call still appears as a row.
+     */
+    val callId: String? = null,
+
+    /** `connected`, `not_picked`, … — the call's outcome, straight from the event's `to`. */
+    val outcome: String? = null,
+    val durationSeconds: Int? = null,
 ) {
+
+    /** True when this event is a call, whatever the backend calls the type today. */
+    val isCall: Boolean
+        get() = callId != null || type?.lowercase().orEmpty().startsWith("call")
     /** "follow_up_scheduled" -> "Follow up scheduled". */
     val typeLabel: String
         get() = type?.replace('_', ' ')?.trim()?.replaceFirstChar { it.uppercase() } ?: "Activity"
@@ -125,6 +158,20 @@ data class LeadTimelineEvent(
     val isEmpty: Boolean
         get() = type.isNullOrBlank() && text.isNullOrBlank() && occurredAtMillis == null
 }
+
+
+/**
+ * A note somebody typed against a lead.
+ *
+ * Carried separately from the lead's [Lead.notes] blob, which holds imported form answers
+ * and anything written before the CRM started keeping notes as their own records.
+ */
+data class LeadNote(
+    val id: String,
+    val text: String,
+    val createdAtMillis: Long?,
+    val authorName: String?,
+)
 
 /**
  * An extra column the organisation has defined on its leads.

@@ -4,7 +4,7 @@ Links a sales rep's phone calls to leads in their employer's Arthax CRM: watches
 phone's call log, matches each call to a lead by number, posts the call, and uploads the
 recording the phone's own dialler saved. Receives push from the CRM: a colleague's
 click-to-call wakes the phone and dials the lead. Kotlin, Hilt, Retrofit + Moshi, Compose,
-WorkManager, Firebase Cloud Messaging. `applicationId` is `com.callrecorder.app` (the successor to the previous
+WorkManager, Firebase Cloud Messaging. `applicationId` is `com.arthax.app` (a new package: it does not update over the previous
 call-recorder app, signed with the same key so it installs as an update); the source
 package is `ai.arthax.app`.
 
@@ -16,7 +16,7 @@ package is `ai.arthax.app`.
 - The Gradle wrapper (9.4.1) downloads itself on first run.
 - `app/google-services.json` is committed: it holds the Firebase project ids and the
   Android API key, which are public client identifiers, not secrets (Firebase project
-  `arthax-d13b2`, Android app registered under `com.callrecorder.app`). If the project is
+  `arthax-d13b2`, Android app registered under `com.arthax.app`). If the project is
   ever re-created, download the new file from Firebase console > Project settings > Your
   apps and replace it; the `com.google.gms.google-services` plugin turns it into resources
   at build time. The backend signs its sends with the *server* key

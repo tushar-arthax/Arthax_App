@@ -1,6 +1,7 @@
 package ai.arthax.app.data.remote.dto
 
 import ai.arthax.app.domain.model.Lead
+import ai.arthax.app.domain.model.LeadNote
 import ai.arthax.app.domain.model.LeadTemperature
 import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
@@ -74,6 +75,15 @@ data class LeadDto(
     @Json(name = "buyer_intent") val buyerIntent: String? = null,
 
     /**
+     * Notes added through `POST /api/leads/{id}/notes`, newest first.
+     *
+     * Defaults to empty rather than being required: a lead answered by an older backend
+     * does not carry the field at all, and its absence must not cost the rest of the lead.
+     * Notes written before the CRM kept them separately are still inside [notes] instead.
+     */
+    @Json(name = "notes_history") val notesHistory: List<LeadNoteDto>? = null,
+
+    /**
      * Org-defined extra columns, shown read-only.
      *
      * `Map<String, Any>` because the values are genuinely mixed — the documented example
@@ -110,6 +120,18 @@ fun LeadDto.toDomain(): Lead = Lead(
     isDuplicate = isDuplicate == true,
     buyerIntent = buyerIntent?.trim()?.takeIf { it.isNotEmpty() },
     createdAt = ApiTime.parseOrNull(createdAt),
+    // Only notes with something written on them, and an id synthesised where the server
+    // sent none so the list still has stable keys.
+    noteHistory = notesHistory.orEmpty().mapIndexedNotNull { index, note ->
+        note.text?.trim()?.takeIf { it.isNotEmpty() }?.let { text ->
+            LeadNote(
+                id = note.id?.takeIf { it.isNotBlank() } ?: "$id-note-$index",
+                text = text,
+                createdAtMillis = ApiTime.parseOrNull(note.createdAt),
+                authorName = note.authorName?.trim()?.takeIf { it.isNotEmpty() },
+            )
+        }
+    },
     // Flattened to text here so the UI never has to care that the map is heterogeneous.
     customFields = customFields.orEmpty()
         .mapNotNull { (key, value) ->
@@ -174,6 +196,29 @@ data class LeadOptionDto(
             .firstOrNull { !it.isNullOrBlank() }
             ?.trim()
 }
+
+
+/**
+ * One note on a lead, from `notes_history` or from `POST /api/leads/{id}/notes`.
+ *
+ * `author_id` and `author_name` are both nullable: the documentation says they come back
+ * null once the author's account has been deleted, which is exactly the lead a long-lived
+ * org is most likely to be looking at.
+ */
+@JsonClass(generateAdapter = true)
+data class LeadNoteDto(
+    @Json(name = "id") val id: String? = null,
+    @Json(name = "text") val text: String? = null,
+    @Json(name = "created_at") val createdAt: String? = null,
+    @Json(name = "author_id") val authorId: String? = null,
+    @Json(name = "author_name") val authorName: String? = null,
+)
+
+/** Body for `POST /api/leads/{id}/notes`. The server trims it and keeps line breaks. */
+@JsonClass(generateAdapter = true)
+data class LeadNoteRequest(
+    @Json(name = "text") val text: String,
+)
 
 /**
  * PATCH /api/leads/{id}.

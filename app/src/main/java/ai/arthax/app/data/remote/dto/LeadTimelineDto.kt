@@ -55,6 +55,17 @@ data class LeadTimelineEventDto(
     @Json(name = "to_user") val toUser: String? = null,
 
     @Json(name = "follow_up_state") val followUpState: String? = null,
+
+    /**
+     * Per-type extras: `duration_seconds` and `direction` on a logged call, `junk_category`
+     * on a junking, `fields` on a details update, and the various `*_id`s.
+     *
+     * Deliberately an untyped map. The documentation is explicit that this has a different
+     * shape for every event type and that new types appear without warning, so a fixed
+     * class here would be a parse failure waiting for the next backend release — and on
+     * this route a parse failure costs the whole journey, not one field.
+     */
+    val meta: Map<String, Any?>? = null,
 ) {
     /** The first of the several names the server might use for each idea. */
     val resolvedType: String? get() = eventType ?: type
@@ -68,11 +79,86 @@ data class LeadTimelineEventDto(
         get() = listOf(actorName, actor, userName, toUser, fromUser)
             .firstOrNull { !it.isNullOrBlank() }
 
-    /** The line of detail under the date, written out if the server sent no prose for it. */
+    /**
+     * The line of detail under the date.
+     *
+     * Built from whatever the event actually carries, in this order: the outcome it moved
+     * to, the server's own prose, and then the facts in [meta] that a rep would otherwise
+     * have to open the call to find. Joined with a middle dot so a logged call reads
+     * "Connected · 0m 16s · asked for pricing" on one line instead of needing three.
+     */
     val resolvedText: String?
-        get() = listOf(description, detail, message, note)
-            .firstOrNull { !it.isNullOrBlank() }
-            ?: transition()
+        get() {
+            val prose = listOf(description, detail, message, note)
+                .firstOrNull { !it.isNullOrBlank() }
+                ?.trim()
+
+            val parts = buildList {
+                // For a call the outcome is the headline, and `detail` is the note beside
+                // it — so both belong here rather than one replacing the other.
+                if (isCall()) {
+                    to?.takeIf { it.isNotBlank() }?.let { add(it.humanise()) }
+                    durationText()?.let { add(it) }
+                    directionText()?.let { add(it) }
+                    prose?.let { add(it) }
+                } else {
+                    add(prose ?: transition())
+                    metaExtra()?.let { add(it) }
+                }
+            }.filterNot { it.isNullOrBlank() }
+
+            return parts.joinToString(" · ").takeIf { it.isNotBlank() }
+        }
+
+    private fun isCall(): Boolean =
+        resolvedType?.lowercase().orEmpty().let { it.startsWith("call_") || it == "call" }
+
+    /** `duration_seconds` rendered the way the calls list renders it. */
+    private fun durationText(): String? {
+        val seconds = metaNumber("duration_seconds")?.toInt() ?: return null
+        if (seconds <= 0) return null
+        return "${seconds / 60}m ${seconds % 60}s"
+    }
+
+    private fun directionText(): String? =
+        (meta?.get("direction") as? String)?.trim()?.takeIf { it.isNotEmpty() }?.humanise()
+
+    /**
+     * The one fact from [meta] worth a line, per event type.
+     *
+     * Only the documented keys, and only where the event would otherwise say nothing
+     * useful: a junking with no reason, or an update that does not name what changed.
+     */
+    private fun metaExtra(): String? {
+        val word = resolvedType?.lowercase().orEmpty()
+        return when {
+            word.contains("junk") -> flattenJson(meta?.get("junk_category"))?.humanise()
+            word.contains("details_updated") -> flattenJson(meta?.get("fields"))
+            else -> null
+        }
+    }
+
+    /** The note a `note_added` event refers to, where the server recorded one. */
+    val noteId: String?
+        get() = (meta?.get("note_id") as? String)?.trim()?.takeIf { it.isNotEmpty() }
+
+    /** The call a `call_logged` event refers to, where the server recorded one. */
+    val callId: String?
+        get() = (meta?.get("call_id") as? String)?.trim()?.takeIf { it.isNotEmpty() }
+
+    /** The call's outcome. On this route it is the event's `to`. */
+    val outcome: String?
+        get() = to?.trim()?.takeIf { it.isNotEmpty() && isCall() }
+
+    val durationSeconds: Int?
+        get() = metaNumber("duration_seconds")?.toInt()
+
+    /** A meta value that should be a number, whichever JSON type it arrived as. */
+    private fun metaNumber(key: String): Double? = when (val raw = meta?.get(key)) {
+        is Number -> raw.toDouble()
+        is String -> raw.trim().toDoubleOrNull()
+        else -> null
+    }
 
     /**
      * A `from`/`to` pair read as a sentence.
@@ -180,6 +266,10 @@ fun LeadTimelineEventDto.toDomain(fallbackId: String): LeadTimelineEvent = LeadT
     occurredAtMillis = ApiTime.parseOrNull(resolvedAt),
     actor = resolvedActor?.trim()?.takeIf { it.isNotEmpty() },
     text = resolvedText?.trim()?.takeIf { it.isNotEmpty() },
+    noteId = noteId,
+    callId = callId,
+    outcome = outcome,
+    durationSeconds = durationSeconds,
 )
 
 /**
@@ -323,6 +413,7 @@ object LeadTimelinePageAdapterFactory : JsonAdapter.Factory {
                 var fromUser: String? = null
                 var toUser: String? = null
                 var followUpState: String? = null
+                var meta: Map<String, Any?>? = null
 
                 reader.beginObject()
                 while (reader.hasNext()) {
@@ -345,6 +436,15 @@ object LeadTimelinePageAdapterFactory : JsonAdapter.Factory {
                         "from_user" -> fromUser = looseText(reader)
                         "to_user" -> toUser = looseText(reader)
                         "follow_up_state" -> followUpState = looseText(reader)
+
+                        // Kept as it arrives. Everything else on the event is flattened to
+                        // text, but meta's values are read by key and a number has to stay
+                        // a number for `duration_seconds` to be usable.
+                        "meta" -> {
+                            @Suppress("UNCHECKED_CAST")
+                            meta = reader.readJsonValue() as? Map<String, Any?>
+                        }
+
                         else -> reader.skipValue()
                     }
                 }
@@ -369,6 +469,7 @@ object LeadTimelinePageAdapterFactory : JsonAdapter.Factory {
                     fromUser = fromUser,
                     toUser = toUser,
                     followUpState = followUpState,
+                    meta = meta,
                 )
             }
 
