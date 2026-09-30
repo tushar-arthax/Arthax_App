@@ -2,38 +2,88 @@ package ai.arthax.app.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Deep navy primary with a single warm accent. Chosen over the Material default purple
-// because this sits on a sales rep's work phone all day next to a CRM — it should read
-// as a business tool, not a consumer app.
+/*
+ * The ArthaX web CRM's palette, token for token.
+ *
+ * Every value below is copied from the CRM's stylesheet so a rep moving between the web app
+ * and the phone sees one product. Nothing here is invented: where Material needs a colour
+ * the CSS has no token for — the "container" roles — it is derived by compositing an
+ * existing token over the card at a fixed alpha, and the derivation is written down.
+ *
+ * Names mirror the CSS variables rather than the old brand-kit names, so a change on the
+ * web side can be found and applied here by searching for the same word.
+ */
 
-val Navy10 = Color(0xFF0B1220)
-val Navy20 = Color(0xFF13203A)
-val Navy30 = Color(0xFF1B2E52)
-val Navy40 = Color(0xFF24406F)
-val Navy80 = Color(0xFFAFC6EE)
-val Navy90 = Color(0xFFD7E3F8)
+// ---------------- Dark: "Linear Obsidian Grade" ----------------
 
-val Sky40 = Color(0xFF1D6FE0)
-val Sky80 = Color(0xFF9DC6FF)
-val Sky90 = Color(0xFFD3E4FF)
+val DarkBackground = Color(0xFF050506)
+val DarkForeground = Color(0xFFF4F5F6)
+val DarkCard = Color(0xFF0A0A0C)
+val DarkSecondary = Color(0xFF121215)
+val DarkMuted = Color(0xFF141418)
+val DarkMutedForeground = Color(0xFF8E929B)
 
-val Slate10 = Color(0xFF0F172A)
-val Slate30 = Color(0xFF334155)
-val Slate50 = Color(0xFF64748B)
-val Slate90 = Color(0xFFE2E8F0)
-val Slate95 = Color(0xFFF1F5F9)
-val Slate98 = Color(0xFFF8FAFC)
+/** `--primary` / `--neon` / `--ring`. The colour the whole dark theme is built around. */
+val DarkNeon = Color(0xFF00FF55)
+val DarkOnNeon = Color(0xFF041007)
 
-// Status colours, used by the lead badges and the log rows. Deliberately not pure
-// red/green: these are read at a glance in bright outdoor light.
-val Success40 = Color(0xFF11734B)
-val Success80 = Color(0xFF7BD8AC)
-val Success90 = Color(0xFFCDF2E0)
+val DarkCyan = Color(0xFF38BDF8)
+val DarkCrimson = Color(0xFFF43F5E)
+val DarkAmber = Color(0xFFFBBF24)
 
-val Warning40 = Color(0xFF8A5A00)
-val Warning80 = Color(0xFFF5C464)
-val Warning90 = Color(0xFFFDECC8)
+/** `--border` and `--input`: white at 8% and 12%, kept as alpha rather than flattened. */
+val DarkBorder = Color(0x14FFFFFF)
+val DarkInput = Color(0x1FFFFFFF)
 
-val Error40 = Color(0xFFB3261E)
-val Error80 = Color(0xFFF2B8B5)
-val Error90 = Color(0xFFF9DEDC)
+// ---------------- Light: "Silicon Valley Balanced Slate" ----------------
+
+val LightBackground = Color(0xFFFBFCFB)
+val LightForeground = Color(0xFF111827)
+val LightCard = Color(0xFFFFFFFF)
+val LightSecondary = Color(0xFFF3F4F6)
+val LightSecondaryForeground = Color(0xFF1F2937)
+val LightMuted = Color(0xFFF4F5F6)
+val LightMutedForeground = Color(0xFF4B5563)
+
+/** `--primary` / `--neon` / `--ring` on light. */
+val LightEmerald = Color(0xFF16A34A)
+val LightOnEmerald = Color(0xFFFFFFFF)
+
+val LightCyan = Color(0xFF0284C7)
+val LightCrimson = Color(0xFFE11D48)
+val LightAmber = Color(0xFFD97706)
+
+/** `--border` and `--input`: black at 9% and 14%. */
+val LightBorder = Color(0x17000000)
+val LightInput = Color(0x24000000)
+
+// ---------------- Derived containers ----------------
+//
+// Material3 needs a filled "container" per accent — for chips, pills and the nav indicator —
+// and the CSS has no token for one. Each is the accent composited over the card at a low
+// alpha, which is exactly what the web does with its `--wash-*` values, resolved to a flat
+// colour here because Compose draws these as opaque surfaces.
+
+/** `--neon` at 14% over `--card`. */
+val DarkNeonContainer = Color(0xFF092C16)
+
+/** `--crimson` at 16% over `--card`. */
+val DarkCrimsonContainer = Color(0xFF2F1219)
+
+/** `--cyan` at 16% over `--card`. */
+val DarkCyanContainer = Color(0xFF112732)
+
+/** `--amber` at 16% over `--card`. */
+val DarkAmberContainer = Color(0xFF312710)
+
+/** `--primary` at 12% over white. */
+val LightEmeraldContainer = Color(0xFFE3F4E9)
+
+/** `--crimson` at 12% over white. */
+val LightCrimsonContainer = Color(0xFFFBE4E9)
+
+/** `--cyan` at 12% over white. */
+val LightCyanContainer = Color(0xFFE1F0F8)
+
+/** `--amber` at 12% over white. */
+val LightAmberContainer = Color(0xFFFAEFE1)

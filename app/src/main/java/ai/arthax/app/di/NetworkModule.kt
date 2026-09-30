@@ -11,6 +11,7 @@ import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
+import ai.arthax.app.data.remote.dto.LeadTimelinePageAdapterFactory
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -24,7 +25,11 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideMoshi(): Moshi = Moshi.Builder().build()
+    fun provideMoshi(): Moshi = Moshi.Builder()
+        // Answers for LeadTimelinePage only and returns null for every other type, so no
+        // other response is affected by it. See LeadTimelinePageAdapterFactory.
+        .add(LeadTimelinePageAdapterFactory)
+        .build()
 
     @Provides
     @Singleton

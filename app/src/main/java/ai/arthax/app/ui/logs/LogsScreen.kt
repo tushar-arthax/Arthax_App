@@ -1,6 +1,9 @@
 package ai.arthax.app.ui.logs
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -27,10 +30,12 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -53,6 +58,7 @@ import ai.arthax.app.domain.model.LogLevel
 import ai.arthax.app.domain.model.LogStage
 import ai.arthax.app.ui.common.EmptyState
 import ai.arthax.app.ui.common.StatusPill
+import ai.arthax.app.ui.theme.OverlineStyle
 import ai.arthax.app.ui.theme.statusColors
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -69,7 +75,8 @@ fun LogsScreen(
 
         Column(Modifier.padding(horizontal = 16.dp)) {
             Spacer(Modifier.height(12.dp))
-            Text("Activity", style = MaterialTheme.typography.headlineSmall)
+            Text("Activity", style = MaterialTheme.typography.headlineMedium)
+            Spacer(Modifier.height(2.dp))
             Text(
                 text = "Everything the app did, and every call waiting to reach the server.",
                 style = MaterialTheme.typography.bodySmall,
@@ -78,7 +85,16 @@ fun LogsScreen(
             Spacer(Modifier.height(12.dp))
         }
 
-        SecondaryTabRow(selectedTabIndex = state.tab.ordinal) {
+        SecondaryTabRow(
+            selectedTabIndex = state.tab.ordinal,
+            containerColor = MaterialTheme.colorScheme.background,
+            divider = {
+                HorizontalDivider(
+                    thickness = 1.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                )
+            },
+        ) {
             Tab(
                 selected = state.tab == LogsViewModel.Tab.ACTIVITY,
                 onClick = { viewModel.selectTab(LogsViewModel.Tab.ACTIVITY) },
@@ -155,8 +171,16 @@ private fun ActivityTab(state: LogsViewModel.UiState, viewModel: LogsViewModel) 
                     )
                 }
                 item {
-                    Spacer(Modifier.height(8.dp))
-                    TextButton(onClick = viewModel::clearLogs, modifier = Modifier.fillMaxWidth()) {
+                    Spacer(Modifier.height(14.dp))
+                    OutlinedButton(
+                        onClick = viewModel::clearLogs,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.small,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ),
+                    ) {
                         Text("Clear activity log")
                     }
                     Spacer(Modifier.height(16.dp))
@@ -181,17 +205,27 @@ private fun LogRow(entry: LogEntry, expanded: Boolean, onClick: () -> Unit) {
             .clickable(enabled = !entry.detail.isNullOrBlank(), onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        shape = RoundedCornerShape(10.dp),
+        shape = MaterialTheme.shapes.small,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
-        Row(Modifier.padding(12.dp)) {
+        // Intrinsic height so the accent stripe can fill the row however tall the entry
+        // grows when its detail is expanded.
+        Row(Modifier.height(IntrinsicSize.Min)) {
+            // A stripe rather than a dot. The level is the thing a rep scans this list for,
+            // and a full-height edge is findable at arm's length where an 8dp dot is not.
             Box(
                 modifier = Modifier
-                    .padding(top = 5.dp)
-                    .size(8.dp)
-                    .background(accent, CircleShape),
+                    .width(3.dp)
+                    .fillMaxHeight()
+                    .background(accent),
             )
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
+            Spacer(Modifier.width(11.dp))
+            Column(
+                Modifier
+                    .weight(1f)
+                    .padding(vertical = 12.dp)
+                    .padding(end = 12.dp),
+            ) {
                 Text(
                     text = entry.message,
                     style = MaterialTheme.typography.bodyMedium,
@@ -214,16 +248,20 @@ private fun LogRow(entry: LogEntry, expanded: Boolean, onClick: () -> Unit) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
-                                .padding(10.dp),
+                                .background(
+                                    MaterialTheme.colorScheme.surfaceVariant,
+                                    MaterialTheme.shapes.extraSmall,
+                                )
+                                .padding(11.dp),
                         )
                     }
                 }
 
                 if (!entry.detail.isNullOrBlank() && !expanded) {
+                    Spacer(Modifier.height(6.dp))
                     Text(
                         text = "Tap for details",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
                     )
                 }
@@ -286,7 +324,7 @@ private fun SectionHeader(title: String, subtitle: String?) {
     Column(Modifier.padding(top = 6.dp)) {
         Text(
             text = title.uppercase(),
-            style = MaterialTheme.typography.labelMedium,
+            style = OverlineStyle,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (subtitle != null) {
@@ -308,22 +346,26 @@ private fun SectionHeader(title: String, subtitle: String?) {
 private fun WaitingForLeadRow(count: Int) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        shape = RoundedCornerShape(12.dp),
+        shape = MaterialTheme.shapes.medium,
+        // Bordered and neutral. On the brand palette `secondaryContainer` is a green, and a
+        // green card reads as "this went well" — which is the opposite of what a call
+        // stuck waiting for a lead means.
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
-        Column(Modifier.padding(14.dp)) {
+        Column(Modifier.padding(16.dp)) {
             Text(
                 text = "$count call(s) waiting for a matching lead",
                 style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                color = MaterialTheme.colorScheme.onSurface,
             )
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(6.dp))
             Text(
                 text = "The CRM did not recognise these numbers. They are re-checked on every pass " +
                     "and sent — with their recordings — as soon as a lead with that number exists.",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -334,8 +376,13 @@ private fun ReviewRow(call: PendingCall, onUploadAnyway: () -> Unit, onNotThisCa
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        shape = RoundedCornerShape(12.dp),
+        // Flat and bordered, like every other card: a shadow does not separate a surface
+        // from the brand's near-black ground, so the outline has to.
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        shape = MaterialTheme.shapes.medium,
+        // This row is asking the rep a question, so it carries the warning edge rather than
+        // the neutral one.
+        border = BorderStroke(1.dp, statusColors.warning.copy(alpha = 0.45f)),
     ) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -357,6 +404,7 @@ private fun ReviewRow(call: PendingCall, onUploadAnyway: () -> Unit, onNotThisCa
                     text = "Needs review",
                     container = statusColors.warningContainer,
                     content = statusColors.warning,
+                    outlined = true,
                 )
             }
 
@@ -414,8 +462,9 @@ private fun CallRow(call: PendingCall, onRetry: () -> Unit, onDiscard: () -> Uni
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        shape = RoundedCornerShape(12.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        shape = MaterialTheme.shapes.medium,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -432,7 +481,12 @@ private fun CallRow(call: PendingCall, onRetry: () -> Unit, onDiscard: () -> Uni
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                StatusPill(text = label, container = container, content = content)
+                StatusPill(
+                    text = label,
+                    container = container,
+                    content = content,
+                    outlined = true,
+                )
             }
 
             if (call.connected && !call.hasRecording) {

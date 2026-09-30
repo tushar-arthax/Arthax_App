@@ -55,6 +55,29 @@ class PushRegistration @Inject constructor(
         if (registered) logger.info(LogStage.SETUP, "Push notifications registered for this phone")
     }
 
+    /**
+     * Re-sends this phone's token to the server, whatever it was told before.
+     *
+     * The manual repair for "a colleague's click-to-call never reaches my phone": a fresh
+     * token is fetched, the server's record is dropped so the upload is not skipped as
+     * redundant, and the result is reported rather than assumed.
+     */
+    suspend fun reregister(): Boolean {
+        if (!hasGoogleServices()) return false
+        registrar.forgetServerRecord()
+        val token = fetchToken()
+        val registered = if (token != null) registrar.register(token) else registrar.onSignedIn()
+        logger.info(
+            LogStage.SETUP,
+            if (registered) {
+                "This phone was re-registered for calls from the CRM"
+            } else {
+                "Could not re-register this phone for calls from the CRM"
+            },
+        )
+        return registered
+    }
+
     /** Firebase issued or rotated the token. */
     suspend fun onNewToken(token: String) {
         val registered = registrar.register(token)

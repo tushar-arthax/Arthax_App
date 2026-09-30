@@ -1,12 +1,15 @@
 package ai.arthax.app
 
 import android.content.Context
+import android.graphics.Color.TRANSPARENT
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import ai.arthax.app.call.CallMonitorService
+import ai.arthax.app.data.local.prefs.AppSettings
 import ai.arthax.app.data.local.prefs.SecureTokenStore
 import ai.arthax.app.data.repository.RemoteConfigRepository
 import ai.arthax.app.data.repository.SyncHealthReporter
@@ -18,11 +21,13 @@ import ai.arthax.app.ui.navigation.MainTab
 import ai.arthax.app.ui.navigation.NavRequest
 import ai.arthax.app.ui.navigation.NavRequests
 import ai.arthax.app.work.WorkScheduler
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -38,6 +43,7 @@ import androidx.compose.ui.Modifier
 import ai.arthax.app.ui.navigation.ArthaxApp
 import ai.arthax.app.ui.navigation.DialConfirmSheet
 import ai.arthax.app.ui.theme.ArthaxTheme
+import ai.arthax.app.ui.theme.isDarkTheme
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
@@ -50,6 +56,8 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var healthReporter: SyncHealthReporter
 
     @Inject lateinit var remoteConfig: RemoteConfigRepository
+
+    @Inject lateinit var settings: AppSettings
 
     @Inject lateinit var navRequests: NavRequests
 
@@ -109,7 +117,28 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            ArthaxTheme {
+            // Collected here rather than inside the theme so there is exactly one reader of
+            // the preference and the whole tree recomposes together when it changes. DARK
+            // is the initial value as well as the stored default, so the very first frame
+            // is already the brand's look — seeded with light, the app would flash white
+            // on every cold start while DataStore read from disk.
+            val themeMode by settings.themeMode
+                .collectAsStateWithLifecycle(initialValue = AppSettings.ThemeMode.DARK)
+            val dark = isDarkTheme(themeMode)
+
+            // Re-applied whenever the look changes, and keyed off *our* theme rather than
+            // the handset's. enableEdgeToEdge() on its own reads the system setting to
+            // decide whether the status bar icons are drawn light or dark — so a dark app
+            // on a light-mode phone got dark icons on a near-black bar and the clock and
+            // battery simply disappeared. The lambda tells it which look actually won.
+            LaunchedEffect(dark) {
+                enableEdgeToEdge(
+                    statusBarStyle = SystemBarStyle.auto(TRANSPARENT, TRANSPARENT) { dark },
+                    navigationBarStyle = SystemBarStyle.auto(TRANSPARENT, TRANSPARENT) { dark },
+                )
+            }
+
+            ArthaxTheme(darkTheme = dark) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,

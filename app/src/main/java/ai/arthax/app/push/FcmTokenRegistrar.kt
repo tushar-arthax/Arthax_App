@@ -60,7 +60,16 @@ class FcmTokenRegistrar(
     }
 
     /** Signing out: the server's record belongs to the ending session, not the phone. */
-    suspend fun onSigningOut() {
+    suspend fun onSigningOut() = forgetServerRecord()
+
+    /**
+     * Forgets what the server was told, keeping the token itself.
+     *
+     * Used by the manual "re-register" in Settings: without this, [register] sees the token
+     * already marked registered and returns true without sending anything, which is exactly
+     * the wrong answer for a rep whose phone is not receiving calls from the CRM.
+     */
+    suspend fun forgetServerRecord() {
         val current = store.read()
         if (current.registeredToken != null) store.write(current.copy(registeredToken = null))
     }

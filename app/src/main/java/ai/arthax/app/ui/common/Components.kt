@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
@@ -31,23 +32,48 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import ai.arthax.app.ui.theme.OverlineStyle
 
-/** Small pill used for lead status and upload status. */
+/**
+ * Small pill used for lead status and upload status.
+ *
+ * Set in the brand's wide-tracked caps. At this size League Spartan's lowercase is tight
+ * enough that a pill and the row title it sits beside blur into one another; caps and a
+ * point of tracking keep them apart without making the pill any louder.
+ */
 @Composable
 fun StatusPill(
     text: String,
     container: Color,
     content: Color,
     modifier: Modifier = Modifier,
+    /**
+     * Drops the fill and keeps only the ring.
+     *
+     * For a list where nearly every row carries a pill — the call history — a filled pill
+     * per row turns into a column of coloured blocks that outweighs the names beside them.
+     * The outline says the same thing and lets the row title stay the loudest thing on it.
+     */
+    outlined: Boolean = false,
 ) {
     Box(
         modifier = modifier
-            .background(container, RoundedCornerShape(50))
+            .background(
+                if (outlined) Color.Transparent else container,
+                RoundedCornerShape(50),
+            )
+            // A hairline of the content colour. On the near-black ground a flat container
+            // alone leaves the pill floating; the edge gives it a plane to sit on.
+            .border(
+                width = 1.dp,
+                color = content.copy(alpha = if (outlined) 0.55f else 0.22f),
+                shape = RoundedCornerShape(50),
+            )
             .padding(horizontal = 10.dp, vertical = 4.dp),
     ) {
         Text(
-            text = text,
-            style = MaterialTheme.typography.labelMedium,
+            text = text.uppercase(),
+            style = OverlineStyle,
             color = content,
         )
     }
@@ -119,8 +145,13 @@ fun FullScreenLoading(label: String, modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        CircularProgressIndicator()
-        Spacer(Modifier.height(16.dp))
+        CircularProgressIndicator(
+            // Thinner than the default. A heavy ring in the primary at this size reads as an
+            // alert rather than as waiting.
+            strokeWidth = 3.dp,
+            modifier = Modifier.size(34.dp),
+        )
+        Spacer(Modifier.height(18.dp))
         Text(
             text = label,
             style = MaterialTheme.typography.bodyMedium,
@@ -145,16 +176,26 @@ fun EmptyState(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            modifier = Modifier.size(48.dp),
-            tint = MaterialTheme.colorScheme.outline,
-        )
-        Spacer(Modifier.height(16.dp))
+        // The icon sits in a tinted disc rather than floating bare on the background. An
+        // empty screen is the one place with nothing else to look at, so the one thing on
+        // it should look deliberate.
+        Box(
+            modifier = Modifier
+                .size(76.dp)
+                .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(34.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.height(20.dp))
         Text(
             text = title,
-            style = MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.titleLarge,
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(8.dp))

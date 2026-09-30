@@ -1,5 +1,6 @@
 package ai.arthax.app.ui.login
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,8 +15,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -27,11 +26,17 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ai.arthax.app.R
 import ai.arthax.app.ui.common.ErrorBanner
 
 @Composable
@@ -57,29 +62,37 @@ fun LoginScreen(
             .padding(horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Spacer(Modifier.height(72.dp))
+        Spacer(Modifier.height(64.dp))
 
-        Icon(
-            imageVector = Icons.Default.Phone,
-            contentDescription = null,
-            modifier = Modifier.size(56.dp),
-            tint = MaterialTheme.colorScheme.primary,
+        // The mark, at its own colours. A logo is not themed: recolouring it to the palette
+        // would make the one thing on this screen that has to be recognisable stop being it.
+        Image(
+            painter = painterResource(R.drawable.arthax_mark),
+            contentDescription = "ArthaX",
+            modifier = Modifier.size(88.dp),
         )
 
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(18.dp))
 
+        // The wordmark set rather than shipped as an image, so it stays sharp at any size
+        // and the accent follows the theme. The X is the brand's, the rest is the text face.
         Text(
-            text = "Arthax",
-            style = MaterialTheme.typography.headlineMedium,
+            text = buildAnnotatedString {
+                append("Artha")
+                withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary)) { append("X") }
+                append(".ai")
+            },
+            style = MaterialTheme.typography.displaySmall,
             color = MaterialTheme.colorScheme.onBackground,
         )
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(10.dp))
 
         Text(
             text = "Sign in with the mobile number registered with your team.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
         )
 
         Spacer(Modifier.height(40.dp))

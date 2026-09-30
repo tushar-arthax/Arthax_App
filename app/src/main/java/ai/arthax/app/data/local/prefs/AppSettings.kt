@@ -124,6 +124,26 @@ class AppSettings(private val context: Context) {
     suspend fun setNotifyGeneral(on: Boolean) = context.dataStore.edit { p -> p[KEY_NOTIFY_GENERAL] = on }
 
     /**
+     * Which of the two looks the app wears.
+     *
+     * [DARK] is the default, and deliberately not [SYSTEM]: the ArthaX CRM is dark — neon
+     * on near-black is what the logo does — so a rep whose phone happens to be in light mode
+     * should still open the app and see the brand, not a white approximation of it. Both
+     * looks are complete and fully legible; this only decides which one is shown first.
+     */
+    enum class ThemeMode { SYSTEM, LIGHT, DARK }
+
+    val themeMode: Flow<ThemeMode> = context.dataStore.data.map { p ->
+        p[KEY_THEME_MODE]?.let { raw ->
+            runCatching { ThemeMode.valueOf(raw) }.getOrDefault(ThemeMode.DARK)
+        } ?: ThemeMode.DARK
+    }
+
+    suspend fun setThemeMode(mode: ThemeMode) = context.dataStore.edit { p ->
+        p[KEY_THEME_MODE] = mode.name
+    }
+
+    /**
      * The device's push token, and the token the server has been given for the current
      * sign-in. The two differ while an upload is still owed: the token arrived before the
      * rep signed in, or the request failed and is retried on the next start.
@@ -289,6 +309,7 @@ class AppSettings(private val context: Context) {
         private val KEY_NOTIFY_NEW_LEADS = booleanPreferencesKey("notify_new_leads")
         private val KEY_NOTIFY_REMINDERS = booleanPreferencesKey("notify_reminders")
         private val KEY_NOTIFY_GENERAL = booleanPreferencesKey("notify_general")
+        private val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
         private val KEY_FCM_TOKEN = stringPreferencesKey("fcm_token")
         private val KEY_FCM_REGISTERED = stringPreferencesKey("fcm_registered_token")
         private val KEY_REMINDED = stringSetPreferencesKey("reminded_follow_ups")

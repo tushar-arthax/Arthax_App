@@ -1,3 +1,13 @@
 <resources>
-    <color name="window_background">#FFF8FAFC</color>
+    <!--
+      The CRM dark theme's background token, matched to ui/theme/Color.kt.
+
+      Dark in the *default* bucket, not only in values-night, because the app's own default
+      is ThemeMode.DARK regardless of what the handset is set to. This colour is painted for
+      the cold-start frame before the first composition, so keying it off the system setting
+      would flash white on a light-mode phone every single launch.
+    -->
+    <color name="window_background">#FF050506</color>
+    <!-- The launcher icon's plate. Same ground as the app itself. -->
+    <color name="ic_launcher_background">#FF050506</color>
 </resources>
