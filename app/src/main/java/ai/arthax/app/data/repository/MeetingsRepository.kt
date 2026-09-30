@@ -1,7 +1,6 @@
 package ai.arthax.app.data.repository
 
 import ai.arthax.app.core.ApiConfig
-import ai.arthax.app.data.local.prefs.SecureTokenStore
 import ai.arthax.app.data.remote.api.ApiResult
 import ai.arthax.app.data.remote.api.ArthaxApi
 import ai.arthax.app.data.remote.api.safeApiCall
@@ -18,8 +17,8 @@ import javax.inject.Singleton
 
 @Singleton
 class MeetingsRepository @Inject constructor(
+    private val agentIdentity: AgentIdentity,
     private val api: ArthaxApi,
-    private val tokenStore: SecureTokenStore,
     private val logger: EventLogger,
 ) {
 
@@ -42,9 +41,14 @@ class MeetingsRepository @Inject constructor(
         status: MeetingStatus? = null,
         search: String? = null,
     ): ApiResult<Page> {
-        val agentId = tokenStore.session?.userId
+        // See CallHistoryRepository: an empty page here hid the same fault.
+        val agentId = agentIdentity.agentId()
         if (agentId.isNullOrBlank()) {
-            return ApiResult.Success(Page(emptyList(), 0, skip, hasMore = false))
+            return ApiResult.Failure.Unexpected(
+                message = "Could not confirm who you are signed in as",
+                detail = "Your meetings cannot be listed until the server confirms your " +
+                    "account. Check your connection, or sign out and in again.",
+            )
         }
 
         val result = safeApiCall {
@@ -102,7 +106,7 @@ class MeetingsRepository @Inject constructor(
     ): ApiResult<Meeting> {
         val request = MeetingCreateRequest(
             leadId = leadId,
-            agentId = tokenStore.session?.userId,
+            agentId = agentIdentity.agentId(),
             meetingType = type.api,
             scheduledAt = ApiTime.format(scheduledAtMillis),
             durationMinutes = durationMinutes,

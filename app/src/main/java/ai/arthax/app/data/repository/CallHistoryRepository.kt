@@ -1,7 +1,6 @@
 package ai.arthax.app.data.repository
 
 import ai.arthax.app.core.ApiConfig
-import ai.arthax.app.data.local.prefs.SecureTokenStore
 import ai.arthax.app.data.remote.api.ApiResult
 import ai.arthax.app.data.remote.api.ArthaxApi
 import ai.arthax.app.data.remote.api.safeApiCall
@@ -26,8 +25,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class CallHistoryRepository @Inject constructor(
+    private val agentIdentity: AgentIdentity,
     private val api: ArthaxApi,
-    private val tokenStore: SecureTokenStore,
     private val logger: EventLogger,
 ) {
 
@@ -67,11 +66,16 @@ class CallHistoryRepository @Inject constructor(
          */
         includeTranscript: Boolean = false,
     ): ApiResult<Page> {
-        val agentId = tokenStore.session?.userId
+        // Repaired from the server when the stored session is missing it. Returning an
+        // empty page here was wrong: a rep whose session never recorded an id saw "no
+        // calls" against a CRM holding hundreds, permanently, with nothing saying why.
+        val agentId = agentIdentity.agentId()
         if (agentId.isNullOrBlank()) {
-            // Not an error worth a banner: the session is being re-established, and the
-            // screen simply has nothing to show yet.
-            return ApiResult.Success(Page(emptyList(), 0, skip, hasMore = false))
+            return ApiResult.Failure.Unexpected(
+                message = "Could not confirm who you are signed in as",
+                detail = "Your calls cannot be listed until the server confirms your " +
+                    "account. Check your connection, or sign out and in again.",
+            )
         }
 
         val query = search?.trim()?.takeIf { it.isNotEmpty() }

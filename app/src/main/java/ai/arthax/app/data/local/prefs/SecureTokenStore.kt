@@ -94,6 +94,19 @@ class SecureTokenStore(private val context: Context) {
         _authState.value = AuthState.AUTHENTICATED
     }
 
+    /**
+     * Writes the rep's id into an existing session.
+     *
+     * Only that one key, and only when there is something to write. A session whose login
+     * response carried no `user` object is stored with an empty id, which leaves the calls
+     * and meetings lists unable to scope themselves and showing nothing; this is how
+     * [ai.arthax.app.data.repository.AgentIdentity] puts it right without a fresh sign-in.
+     */
+    fun updateUserId(userId: String) {
+        if (userId.isBlank()) return
+        prefs.edit().putString(KEY_USER_ID, userId).commit()
+    }
+
     fun clear() {
         prefs.edit().clear().commit()
         _authState.value = AuthState.LOGGED_OUT
