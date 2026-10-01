@@ -3,6 +3,8 @@ package ai.arthax.app.data
 import ai.arthax.app.data.remote.api.AuthInterceptor
 import ai.arthax.app.data.remote.api.AuthInterceptor.SessionVerdict
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -41,5 +43,51 @@ class AuthInterceptorSessionTest {
     fun `an unrelated rejection is inconclusive too`() {
         // A 404 from the profile route on an older backend is not a verdict on the token.
         assertEquals(SessionVerdict.UNKNOWN, AuthInterceptor.sessionVerdict(404))
+    }
+}
+
+/**
+ * When a run of refusals ends the session.
+ *
+ * The rule exists because a single inconclusive 401 is usually the network failing, not the
+ * token dying — the probe is itself a request, and a dead zone fails both. A run of them
+ * with no successful request in between is a different story.
+ */
+class AuthInterceptorRefusalStreakTest {
+
+    /** The server's own refusal is final on the first one; no streak required. */
+    @Test
+    fun `an invalid session signs out immediately`() {
+        assertTrue(AuthInterceptor.shouldSignOut(AuthInterceptor.SessionVerdict.INVALID, 0))
+        assertTrue(AuthInterceptor.shouldSignOut(AuthInterceptor.SessionVerdict.INVALID, 1))
+    }
+
+    /** A probe that passed proves the token is alive, whatever the 401 was about. */
+    @Test
+    fun `a valid session never signs out`() {
+        assertFalse(AuthInterceptor.shouldSignOut(AuthInterceptor.SessionVerdict.VALID, 0))
+        assertFalse(
+            AuthInterceptor.shouldSignOut(
+                AuthInterceptor.SessionVerdict.VALID,
+                AuthInterceptor.MAX_UNRESOLVED_REFUSALS + 5,
+            ),
+        )
+    }
+
+    /** One or two inconclusive refusals are kept; the third ends it. */
+    @Test
+    fun `inconclusive refusals sign out only at the threshold`() {
+        val unknown = AuthInterceptor.SessionVerdict.UNKNOWN
+
+        assertFalse(AuthInterceptor.shouldSignOut(unknown, 1))
+        assertFalse(AuthInterceptor.shouldSignOut(unknown, 2))
+        assertTrue(AuthInterceptor.shouldSignOut(unknown, 3))
+        assertTrue(AuthInterceptor.shouldSignOut(unknown, 4))
+    }
+
+    /** The documented threshold, so a change to it is a deliberate one. */
+    @Test
+    fun `the threshold is three`() {
+        assertEquals(3, AuthInterceptor.MAX_UNRESOLVED_REFUSALS)
     }
 }

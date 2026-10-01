@@ -3,6 +3,9 @@ package ai.arthax.app.ui.leads
 import android.content.ActivityNotFoundException
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,22 +21,29 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -47,6 +57,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -82,6 +96,7 @@ fun LeadsScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val keyboard = LocalSoftwareKeyboardController.current
     val listState = rememberLazyListState()
 
     LaunchedEffect(focus?.nonce) {
@@ -134,106 +149,282 @@ fun LeadsScreen(
         }
     }
 
-    Column(modifier = modifier.fillMaxSize()) {
+    // The detail screen is drawn over the list rather than navigated to, so the rep comes
+    // back to their scroll position, search and filter exactly as they left them.
+    state.openLeadId?.let { openId ->
+        LeadDetailScreen(
+            leadId = openId,
+            onBack = viewModel::closeLead,
+            modifier = modifier,
+        )
+        return
+    }
 
-        Column(Modifier.padding(horizontal = 16.dp)) {
-            Spacer(Modifier.height(12.dp))
+    Box(modifier = modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("Leads", style = MaterialTheme.typography.headlineSmall)
+            Column(Modifier.padding(horizontal = 16.dp)) {
+                Spacer(Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Leads", style = MaterialTheme.typography.headlineMedium)
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            // "50 of 365 leads" — how much of the list is in hand, which is what
+                            // makes an endlessly scrolling list feel finite.
+                            text = when {
+                                state.total > state.leads.size -> "${state.leads.size} of ${state.total} leads"
+                                state.leads.isNotEmpty() -> "${state.leads.size} lead(s)"
+                                state.callMode == CallMode.DIRECT -> "Tap CALL to dial straight away"
+                                else -> "Tap CALL to open your dialler"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+
+                    if (state.pendingCalls > 0) {
+                        PendingUploadsChip(count = state.pendingCalls)
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                // The search is debounced and served by the server, so between the last
+                // keystroke and the new rows there is a moment where the list underneath is
+                // still the *old* result. Saying so in the field itself — and offering the
+                // way out of a search in the same place — is what stops that moment reading
+                // as "it ignored me".
+                OutlinedTextField(
+                    value = state.query,
+                    onValueChange = viewModel::onQueryChanged,
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("Search name, company or number") },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    trailingIcon = {
+                        when {
+                            state.isSearching -> CircularProgressIndicator(
+                                modifier = Modifier.size(17.dp),
+                                strokeWidth = 2.dp,
+                            )
+
+                            state.query.isNotEmpty() -> IconButton(
+                                onClick = { viewModel.onQueryChanged("") },
+                            ) {
+                                Icon(
+                                    Icons.Default.Clear,
+                                    contentDescription = "Clear the search",
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    shape = MaterialTheme.shapes.small,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
+                )
+
+                // What the search actually found, so an empty-looking list is explained
+                // rather than just empty.
+                if (state.query.isNotBlank() && !state.isLoading) {
+                    Spacer(Modifier.height(8.dp))
                     Text(
-                        text = if (state.callMode == CallMode.DIRECT) {
-                            "Tap CALL to dial straight away"
-                        } else {
-                            "Tap CALL to open your dialler"
+                        text = when (state.total) {
+                            0 -> "No leads match \"${state.query.trim()}\""
+                            1 -> "1 lead matches \"${state.query.trim()}\""
+                            else -> "${state.total} leads match \"${state.query.trim()}\""
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
 
-                if (state.pendingCalls > 0) {
-                    PendingUploadsChip(count = state.pendingCalls)
+                Spacer(Modifier.height(10.dp))
+
+                // Built from the organisation's own statuses, so an org that has invented
+                // "Follow up pending" gets a chip for it without an app release.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    state.filters.forEach { filter ->
+                        FilterChip(
+                            selected = state.filter == filter,
+                            onClick = { viewModel.setFilter(filter) },
+                            label = { Text(filter.label) },
+                            leadingIcon = if (state.filter == filter) {
+                                {
+                                    Icon(
+                                        Icons.Default.Check,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(15.dp),
+                                    )
+                                }
+                            } else {
+                                null
+                            },
+                        )
+                    }
+
+                    // The org's own statuses arrive a moment after the list. Saying so beats
+                    // a row that silently grows two seconds later.
+                    if (state.isLoadingFilters) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(start = 2.dp),
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(13.dp),
+                                strokeWidth = 2.dp,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = "Loading statuses",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+
+                    // A row with nothing on it but All is either an org with no statuses or
+                    // a request that failed, and those must not look the same.
+                    state.filterError?.let { message ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(start = 2.dp),
+                        ) {
+                            Icon(
+                                Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = statusColors.warning,
+                                modifier = Modifier.size(14.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                // The reason, not just the fact. "Statuses unavailable" on
+                                // its own is indistinguishable between a dead connection and
+                                // a response the app could not read, and those are fixed in
+                                // completely different places.
+                                text = listOfNotNull(message, state.filterErrorDetail)
+                                    .distinct()
+                                    .joinToString(" — "),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = statusColors.warning,
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            TextButton(
+                                onClick = viewModel::loadFilters,
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            ) {
+                                Text("Retry", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
                 }
+
+                state.warnings.forEach { warning ->
+                    Spacer(Modifier.height(10.dp))
+                    SetupWarningCard(warning = warning, onFix = onOpenSettings)
+                }
+
+                if (state.error != null) {
+                    Spacer(Modifier.height(10.dp))
+                    ErrorBanner(
+                        message = state.error.orEmpty(),
+                        detail = state.errorDetail,
+                        onRetry = viewModel::refresh,
+                    )
+                }
+
+                Spacer(Modifier.height(12.dp))
             }
 
-            Spacer(Modifier.height(12.dp))
-
-            OutlinedTextField(
-                value = state.query,
-                onValueChange = viewModel::onQueryChanged,
-                modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Search name, company or number") },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-            )
-
-            state.warnings.forEach { warning ->
-                Spacer(Modifier.height(10.dp))
-                SetupWarningCard(warning = warning, onFix = onOpenSettings)
+            if (state.isRefreshing) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
 
-            if (state.error != null) {
-                Spacer(Modifier.height(10.dp))
-                ErrorBanner(
-                    message = state.error.orEmpty(),
-                    detail = state.errorDetail,
-                    onRetry = viewModel::refresh,
+            when {
+                state.isLoading -> FullScreenLoading("Loading your leads")
+
+                state.leads.isEmpty() && state.query.isNotBlank() -> EmptyState(
+                    icon = Icons.Default.Search,
+                    title = "No matches",
+                    message = "No lead matches \"${state.query}\".",
                 )
-            }
 
-            Spacer(Modifier.height(12.dp))
-        }
+                state.leads.isEmpty() && state.error == null -> EmptyState(
+                    icon = Icons.Default.Person,
+                    title = if (state.filter == LeadFilter.All) {
+                        "No leads yet"
+                    } else {
+                        "Nothing under ${state.filter.label}"
+                    },
+                    message = if (state.filter == LeadFilter.All) {
+                        "Leads assigned to you will appear here."
+                    } else {
+                        "No lead currently sits in this bucket."
+                    },
+                    actionLabel = "Refresh",
+                    onAction = viewModel::refresh,
+                )
 
-        if (state.isRefreshing) {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-        }
+                else -> LazyColumn(
+                    state = listState,
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    items(state.leads, key = { it.id }) { lead ->
+                        LeadCard(
+                            lead = lead,
+                            highlighted = lead.id == state.highlightedLeadId,
+                            onCall = { viewModel.onCallClicked(lead) },
+                            onOpen = { viewModel.openLead(lead.id) },
+                        )
+                    }
 
-        when {
-            state.isLoading -> FullScreenLoading("Loading your leads")
-
-            state.leads.isEmpty() && state.query.isNotBlank() -> EmptyState(
-                icon = Icons.Default.Search,
-                title = "No matches",
-                message = "No lead matches \"${state.query}\".",
-            )
-
-            state.leads.isEmpty() && state.error == null -> EmptyState(
-                icon = Icons.Default.Person,
-                title = "No leads yet",
-                message = "Leads assigned to you will appear here.",
-                actionLabel = "Refresh",
-                onAction = viewModel::refresh,
-            )
-
-            else -> LazyColumn(
-                state = listState,
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                items(state.leads, key = { it.id }) { lead ->
-                    LeadCard(
-                        lead = lead,
-                        highlighted = lead.id == state.highlightedLeadId,
-                        onCall = { viewModel.onCallClicked(lead) },
-                    )
-                }
-
-                item(key = "footer") {
-                    ListFooter(
-                        isLoadingMore = state.isLoadingMore,
-                        hasLoadedEverything = state.hasLoadedEverything,
-                        shown = state.leads.size,
-                        total = state.total,
-                    )
+                    item(key = "footer") {
+                        ListFooter(
+                            isLoadingMore = state.isLoadingMore,
+                            hasLoadedEverything = state.hasLoadedEverything,
+                            shown = state.leads.size,
+                            total = state.total,
+                        )
+                        // Clears the floating button, which would otherwise sit on the last row.
+                        Spacer(Modifier.height(72.dp))
+                    }
                 }
             }
         }
+
+        ExtendedFloatingActionButton(
+            onClick = viewModel::openAddLead,
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(20.dp),
+        ) {
+            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Add lead")
+        }
+    }
+
+    state.addLead?.let { sheet ->
+        AddLeadSheet(
+            sources = sheet.sources,
+            isSaving = sheet.isSaving,
+            error = sheet.error,
+            onDismiss = viewModel::closeAddLead,
+            onSave = viewModel::createLead,
+        )
     }
 }
 
@@ -284,7 +475,7 @@ private fun PendingUploadsChip(count: Int) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
-            Icons.Default.Send,
+            Icons.AutoMirrored.Filled.Send,
             contentDescription = null,
             modifier = Modifier.size(16.dp),
             tint = MaterialTheme.colorScheme.onSecondaryContainer,
@@ -332,48 +523,61 @@ private fun LeadCard(
     lead: Lead,
     highlighted: Boolean,
     onCall: () -> Unit,
+    onOpen: () -> Unit,
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpen),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        shape = RoundedCornerShape(14.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        shape = MaterialTheme.shapes.medium,
         // The lead a notification pointed at, so it stands out from the rows around it.
-        border = if (highlighted) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
+        border = if (highlighted) {
+            BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+        } else {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        },
     ) {
-        Column(Modifier.padding(14.dp)) {
+        Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.Top) {
                 Column(Modifier.weight(1f)) {
                     Text(
                         text = lead.name,
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleLarge,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    if (!lead.company.isNullOrBlank()) {
-                        Text(
-                            text = lead.company,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    Spacer(Modifier.height(4.dp))
+                    Spacer(Modifier.height(1.dp))
                     Text(
-                        text = lead.phoneNumber,
+                        text = lead.phoneNumber.ifBlank { "No phone number" },
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
 
-                LeadStatusPill(lead)
+                Spacer(Modifier.width(8.dp))
+                Column(horizontalAlignment = Alignment.End) {
+                    LeadStatusPill(lead)
+                    if (lead.isJunk) {
+                        Spacer(Modifier.height(6.dp))
+                        StatusPill(
+                            text = "Junk",
+                            container = MaterialTheme.colorScheme.errorContainer,
+                            content = MaterialTheme.colorScheme.error,
+                            outlined = true,
+                        )
+                    }
+                }
             }
 
-            if (!lead.notes.isNullOrBlank()) {
-                Spacer(Modifier.height(10.dp))
+            // Company, then whatever the notes say. A rep recognises a lead by one or the
+            // other, and the list is far easier to scan with a line of context per row.
+            val subtitle = lead.company ?: lead.notes
+            if (!subtitle.isNullOrBlank()) {
+                Spacer(Modifier.height(8.dp))
                 Text(
-                    text = lead.notes,
+                    text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
@@ -381,29 +585,36 @@ private fun LeadCard(
                 )
             }
 
-            Spacer(Modifier.height(12.dp))
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Spacer(Modifier.height(12.dp))
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            val meta = buildList {
+                lead.lastContactedAt?.let { add("Last called ${relativeTime(it)}") }
+                lead.nextFollowUpAt?.let { add("Follow-up ${relativeTime(it)}") }
+            }
+            if (meta.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
                 Text(
-                    text = lead.lastContactedAt?.let { "Last called ${relativeTime(it)}" }
-                        ?: "Not called yet",
+                    text = meta.joinToString("  ·  "),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
                 )
+            }
 
-                Button(
+            if (lead.isCallable) {
+                Spacer(Modifier.height(14.dp))
+                // The one action on the row. Outlined rather than filled: the row itself is
+                // already tappable, and a solid primary button per row would make a list of
+                // forty leads a wall of accent colour.
+                OutlinedButton(
                     onClick = onCall,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
+                    shape = MaterialTheme.shapes.small,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.primary,
                     ),
-                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
                 ) {
-                    Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(17.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("CALL", style = MaterialTheme.typography.labelLarge)
+                    Text("Call now", style = MaterialTheme.typography.labelLarge)
                 }
             }
         }
@@ -411,23 +622,56 @@ private fun LeadCard(
 }
 
 @Composable
+private fun LeadAvatar(name: String) {
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = initialsOf(name),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** Up to two initials from the lead's name; "?" when there is nothing usable to take. */
+private fun initialsOf(name: String): String =
+    name.trim()
+        .split(Regex("\\s+"))
+        .filter { it.isNotBlank() }
+        .take(2)
+        .mapNotNull { part -> part.firstOrNull { it.isLetterOrDigit() } }
+        .joinToString("")
+        .uppercase()
+        .ifBlank { "?" }
+
+@Composable
 private fun LeadStatusPill(lead: Lead) {
-    // `status` is free text on this backend ("contacted", "new", whatever the CRM was
-    // configured with), so it is shown as-is rather than mapped onto a fixed enum that
-    // would silently swallow values we have not seen. `temperature` is a real server enum,
-    // so it carries the colour.
-    val (container, content) = when (lead.temperature) {
-        LeadTemperature.HOT -> MaterialTheme.colorScheme.errorContainer to
-            MaterialTheme.colorScheme.onErrorContainer
-        LeadTemperature.WARM -> statusColors.warningContainer to statusColors.warning
-        LeadTemperature.COLD -> MaterialTheme.colorScheme.secondaryContainer to
-            MaterialTheme.colorScheme.onSecondaryContainer
+    // `status` is free text on this backend — an org defines its own — so it is shown as
+    // given rather than mapped onto a fixed enum that would swallow anything unexpected.
+    // The colour is keyed off the few words that mean the same thing everywhere; anything
+    // else falls back to the lead's temperature, which is a real server enum.
+    val word = lead.status?.trim()?.lowercase().orEmpty()
+    val colour = when {
+        word.contains("won") || word.contains("qualified") -> statusColors.success
+        word.contains("lost") || word.contains("reject") -> MaterialTheme.colorScheme.error
+        word.contains("contact") || word.contains("follow") -> statusColors.warning
+        word == "new" -> MaterialTheme.colorScheme.primary
+        else -> when (lead.temperature) {
+            LeadTemperature.HOT -> MaterialTheme.colorScheme.error
+            LeadTemperature.WARM -> statusColors.warning
+            LeadTemperature.COLD -> MaterialTheme.colorScheme.onSurfaceVariant
+        }
     }
 
     StatusPill(
         text = lead.statusLabel ?: lead.temperature.label,
-        container = container,
-        content = content,
+        container = colour.copy(alpha = 0.12f),
+        content = colour,
+        outlined = true,
     )
 }
 

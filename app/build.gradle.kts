@@ -70,9 +70,12 @@ android {
             // traces. Release carries the shrinking; the rules were smoke-tested by
             // temporarily enabling them here.
             isMinifyEnabled = false
-            // Overridden per-build-type, so the two environments can never be confused at
-            // runtime. Point this back at https://staging-api.arthax.ai/ to keep debug
-            // builds off the live database while developing.
+            // Production, deliberately, and the same host the release build uses.
+            //
+            // There is one backend this app is ever pointed at. A debug build on a
+            // different host looks like it works and then behaves differently in the
+            // field - which is exactly how the lead statuses came to be missing from a
+            // debug build while the endpoint was answering perfectly well.
             buildConfigField("String", "API_BASE_URL", "\"https://api.arthax.ai/\"")
             buildConfigField("String", "API_ENVIRONMENT", "\"production\"")
         }
@@ -191,6 +194,9 @@ dependencies {
     // parsing can actually be tested on the JVM.
     testImplementation(libs.org.json)
     testImplementation(libs.kotlinx.coroutines.test)
+    // Test scope only: lets the real Retrofit/Moshi/OkHttp stack be driven against a
+    // canned 200 in a plain JVM test, rather than reasoning about it from the outside.
+    testImplementation(libs.okhttp.mockwebserver)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)

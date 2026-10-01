@@ -23,6 +23,10 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material3.AlertDialog
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import ai.arthax.app.ui.theme.OverlineStyle
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -42,6 +46,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.IconButton
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.stateDescription
+import ai.arthax.app.ui.theme.isDarkTheme
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -54,6 +66,7 @@ import ai.arthax.app.push.PushRegistration
 import ai.arthax.app.ui.common.AppPermissions
 import ai.arthax.app.ui.common.DeviceSetup
 import ai.arthax.app.ui.common.ErrorBanner
+import ai.arthax.app.ui.theme.ArthaxIcons
 import ai.arthax.app.ui.theme.statusColors
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -90,8 +103,27 @@ fun SettingsScreen(
             .padding(horizontal = 16.dp),
     ) {
         Spacer(Modifier.height(12.dp))
-        Text("Settings", style = MaterialTheme.typography.headlineSmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "Settings",
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier.weight(1f),
+            )
+            // The theme lives up here as a single icon rather than in a section of its
+            // own. It is a one-bit choice a rep makes once, and a three-tile picker with a
+            // caption under it was spending a whole screenful of a scrolling page on it.
+            ThemeToggle(
+                selected = state.themeMode,
+                onSelect = viewModel::setThemeMode,
+            )
+        }
         Spacer(Modifier.height(16.dp))
+
+        RemoteCallingSection(
+            state = state,
+            onCheck = viewModel::checkRemoteCalling,
+            onReregister = viewModel::reregisterForRemoteCalls,
+        )
 
         SettingsSection(title = "Signed in") {
             Text(
@@ -327,25 +359,9 @@ fun SettingsScreen(
                 onChange = viewModel::setNotifyGeneral,
             )
 
-            Spacer(Modifier.height(10.dp))
-            StatusLine(
-                ok = state.pushState == PushRegistration.State.REGISTERED,
-                text = when (state.pushState) {
-                    PushRegistration.State.REGISTERED -> "Push: registered \u2713"
-                    PushRegistration.State.NOT_SIGNED_IN -> "Push: not registered — sign in"
-                    PushRegistration.State.NO_GOOGLE_SERVICES -> "Push: no Google services on this phone"
-                    PushRegistration.State.PENDING -> "Push: not registered yet — retried at next start"
-                },
-            )
-            if (state.pushState == PushRegistration.State.NO_GOOGLE_SERVICES) {
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    text = "Calls requested from the CRM cannot reach this phone. Everything " +
-                        "else works; reminders are still armed from your lead list.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            // The push registration state and its repair now live in "Calls from the CRM"
+            // at the top, where a rep looks when the CRM cannot ring them. Repeating it
+            // here left two places claiming authority over the same fact.
             Spacer(Modifier.height(4.dp))
             TextButton(
                 onClick = {
@@ -518,6 +534,133 @@ private fun PrivacyPolicyLink() {
 private fun formatClock(millis: Long): String =
     SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(millis))
 
+/**
+ * Light, dark, or follow the phone.
+ *
+ * Drawn as three tiles with an icon each rather than a row of words: a sun and a moon are
+ * read faster than "Light" and "Dark", and the labels stay underneath so nothing depends on
+ * recognising the glyph. Dark is marked as the default, because a rep whose phone is in
+ * light mode and who has never touched this will otherwise wonder why Arthax alone is dark.
+ */
+@Composable
+private fun ThemeToggle(
+    selected: AppSettings.ThemeMode,
+    onSelect: (AppSettings.ThemeMode) -> Unit,
+) {
+    // What tapping would give you, which is also what the icon shows: a sun while the app
+    // is dark, a moon while it is light. Showing the *destination* rather than the current
+    // state is the convention every phone's own toggle uses.
+    val goingDark = !isDarkTheme(selected)
+    val next = if (goingDark) AppSettings.ThemeMode.DARK else AppSettings.ThemeMode.LIGHT
+
+    IconButton(
+        onClick = { onSelect(next) },
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+            .semantics {
+                role = Role.Switch
+                stateDescription = if (goingDark) "Light theme" else "Dark theme"
+            },
+    ) {
+        Icon(
+            imageVector = if (goingDark) ArthaxIcons.Moon else ArthaxIcons.Sun,
+            contentDescription = if (goingDark) "Switch to the dark theme" else "Switch to the light theme",
+            tint = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.size(19.dp),
+        )
+    }
+}
+
+/**
+ * Whether the CRM can reach this phone.
+ *
+ * The two questions a rep has when a colleague's click-to-call does not arrive are "is my
+ * session still good" and "does the server have my device" \u2014 so each gets a button that
+ * answers it out loud rather than a status line they have to interpret.
+ */
+@Composable
+private fun RemoteCallingSection(
+    state: SettingsViewModel.UiState,
+    onCheck: () -> Unit,
+    onReregister: () -> Unit,
+) {
+    SettingsSection(title = "Calls from the CRM") {
+        StatusLine(
+            ok = state.pushState == PushRegistration.State.REGISTERED,
+            text = when (state.pushState) {
+                PushRegistration.State.REGISTERED -> "This phone can be rung from the CRM"
+                PushRegistration.State.NOT_SIGNED_IN -> "Sign in to receive calls from the CRM"
+                PushRegistration.State.NO_GOOGLE_SERVICES -> "No Google services on this phone"
+                PushRegistration.State.PENDING -> "Not registered yet"
+            },
+        )
+
+        if (state.repRole.isNotBlank() || state.repEmail.isNotBlank()) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = listOfNotNull(
+                    state.repName.takeIf { it.isNotBlank() },
+                    state.repRole.takeIf { it.isNotBlank() }?.uppercase(),
+                ).joinToString("  \u00b7  "),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        state.remoteMessage?.let { message ->
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (state.remoteMessageIsError) {
+                    statusColors.warning
+                } else {
+                    statusColors.success
+                },
+            )
+        }
+
+        Spacer(Modifier.height(14.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedButton(
+                onClick = onCheck,
+                enabled = !state.isCheckingRemote,
+                shape = MaterialTheme.shapes.small,
+                modifier = Modifier.weight(1f),
+            ) {
+                if (state.isCheckingRemote) {
+                    CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("Check session")
+                }
+            }
+            OutlinedButton(
+                onClick = onReregister,
+                // Nothing to register without Google services on the handset.
+                enabled = !state.isCheckingRemote &&
+                    state.pushState != PushRegistration.State.NO_GOOGLE_SERVICES,
+                shape = MaterialTheme.shapes.small,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Re-register")
+            }
+        }
+
+        if (state.pushState == PushRegistration.State.NO_GOOGLE_SERVICES) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Everything else works. Calls requested from the CRM cannot reach " +
+                    "this phone without Google services.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
 @Composable
 private fun SettingsSection(
     title: String,
@@ -528,16 +671,19 @@ private fun SettingsSection(
             .fillMaxWidth()
             .padding(bottom = 14.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        // Bordered rather than raised, like every other card: a shadow does not separate a
+        // surface from the brand's near-black ground.
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        shape = RoundedCornerShape(14.dp),
+        shape = MaterialTheme.shapes.medium,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Column(Modifier.padding(16.dp)) {
             Text(
                 text = title.uppercase(),
-                style = MaterialTheme.typography.labelMedium,
+                style = OverlineStyle,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(12.dp))
             content()
         }
     }

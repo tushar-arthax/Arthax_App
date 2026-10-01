@@ -9,6 +9,8 @@ import ai.arthax.app.call.CallLogReconciler
 import ai.arthax.app.call.CallTracker
 import ai.arthax.app.data.local.prefs.AppSettings
 import ai.arthax.app.data.remote.api.ApiResult
+import ai.arthax.app.data.remote.dto.LeadCreateRequest
+import ai.arthax.app.domain.model.LeadOption
 import ai.arthax.app.data.repository.CallSyncRepository
 import ai.arthax.app.data.repository.LeadsRepository
 import ai.arthax.app.domain.model.CallMode
@@ -75,11 +77,46 @@ class LeadsViewModel @Inject constructor(
         val pendingCalls: Int = 0,
         /** The lead a notification pointed at; drawn with an outline until the rep moves on. */
         val highlightedLeadId: String? = null,
+        /** Built from the org's own statuses once they arrive. */
+        val filters: List<LeadFilter> = emptyList(),
+        /** True until `GET /api/leads/statuses` answers, so the chip row can say so. */
+        val isLoadingFilters: Boolean = true,
+        /** Set when the statuses could not be loaded, so the row says why instead of being bare. */
+        val filterError: String? = null,
+        /**
+         * The server's or the parser's own words about that failure.
+         *
+         * Shown rather than kept for the log, because the generic message on its own sent us
+         * hunting the wrong end of this once already: the request was answering 200 and the
+         * real reason — a field the response did not carry — was readable the whole time.
+         */
+        val filterErrorDetail: String? = null,
+        val filter: LeadFilter = LeadFilter.All,
+        /**
+         * A search has been typed but its results are not on screen yet.
+         *
+         * Covers the debounce as well as the request, because from the rep's side those are
+         * one wait: the rows under the field are the previous search's until both are done.
+         */
+        val isSearching: Boolean = false,
+        /** Set while a lead detail screen is open on top of the list. */
+        val openLeadId: String? = null,
+        val message: String? = null,
+
+        /** Non-null while the add-lead sheet is open. */
+        val addLead: AddLeadState? = null,
     ) {
         /** True once every page the server has for this filter is on screen. */
         val hasLoadedEverything: Boolean
             get() = !hasMore && !isLoading && !isLoadingMore && leads.isNotEmpty()
     }
+
+    /** The add-lead sheet: the org's sources, plus whatever the last attempt said. */
+    data class AddLeadState(
+        val sources: List<LeadOption> = emptyList(),
+        val isSaving: Boolean = false,
+        val error: String? = null,
+    )
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -107,7 +144,133 @@ class LeadsViewModel @Inject constructor(
         observePendingCalls()
         observeQuery()
         observeRefreshRequests()
+        loadFilters()
         load(reset = true, showSpinner = true)
+    }
+
+    /**
+     * Builds the chip row from the organisation's own statuses.
+     *
+     * Starts as All + Junk, which are real filters that work with no server round trip, and
+     * gains a chip per status once they arrive. Nothing is invented: a hardcoded status list
+     * would show chips that filter to nothing on an org that does not use those words.
+     */
+    fun loadFilters() {
+        _state.update {
+            it.copy(
+                filters = LeadFilter.build(emptyList()),
+                isLoadingFilters = true,
+                filterError = null,
+                filterErrorDetail = null,
+            )
+        }
+
+        viewModelScope.launch {
+            when (val result = leadsRepository.fetchStatuses()) {
+                is ApiResult.Success -> _state.update {
+                    it.copy(
+                        filters = LeadFilter.build(result.data),
+                        isLoadingFilters = false,
+                        filterError = null,
+                        filterErrorDetail = null,
+                    )
+                }
+
+                is ApiResult.Failure -> _state.update {
+                    it.copy(
+                        isLoadingFilters = false,
+                        filterError = result.message,
+                        filterErrorDetail = result.detail,
+                    )
+                }
+            }
+        }
+    }
+
+    fun setFilter(filter: LeadFilter) {
+        if (_state.value.filter == filter) return
+        _state.update { it.copy(filter = filter) }
+        load(reset = true, showSpinner = true)
+    }
+
+    fun openLead(leadId: String) = _state.update { it.copy(openLeadId = leadId) }
+
+    /**
+     * Closes the detail screen.
+     *
+     * [changed] is true when the rep edited, junked or deleted the lead, in which case the
+     * list behind is reloaded — the row they just changed is sitting there stale otherwise.
+     */
+    fun closeLead(changed: Boolean) {
+        _state.update { it.copy(openLeadId = null) }
+        if (changed) refresh()
+    }
+
+    fun dismissMessage() = _state.update { it.copy(message = null) }
+
+    /**
+     * Opens the add-lead sheet.
+     *
+     * The sources are fetched when the sheet opens rather than with the list, because most
+     * sessions never add a lead and the chip row is the only thing that needs them.
+     */
+    fun openAddLead() {
+        _state.update { it.copy(addLead = AddLeadState()) }
+
+        viewModelScope.launch {
+            val sources = (leadsRepository.fetchSources() as? ApiResult.Success)?.data.orEmpty()
+            _state.update { current ->
+                current.addLead?.let { current.copy(addLead = it.copy(sources = sources)) } ?: current
+            }
+        }
+    }
+
+    fun closeAddLead() = _state.update { it.copy(addLead = null) }
+
+    fun createLead(
+        name: String,
+        phone: String,
+        email: String,
+        company: String,
+        location: String,
+        occupation: String,
+        source: String?,
+        notes: String,
+    ) {
+        val sheet = _state.value.addLead ?: return
+        if (sheet.isSaving) return
+
+        _state.update { it.copy(addLead = sheet.copy(isSaving = true, error = null)) }
+
+        val request = LeadCreateRequest(
+            name = name.trim(),
+            phone = phone.trim(),
+            email = email.trim().takeIf { it.isNotEmpty() },
+            company = company.trim().takeIf { it.isNotEmpty() },
+            location = location.trim().takeIf { it.isNotEmpty() },
+            occupation = occupation.trim().takeIf { it.isNotEmpty() },
+            source = source,
+            notes = notes.trim().takeIf { it.isNotEmpty() },
+        )
+
+        viewModelScope.launch {
+            when (val result = leadsRepository.createLead(request)) {
+                is ApiResult.Success -> {
+                    _state.update {
+                        it.copy(addLead = null, message = "Added ${result.data.name}")
+                    }
+                    // Reloaded rather than spliced in: the server assigns the lead, sets a
+                    // default status and may flag it a duplicate, none of which is known here.
+                    refresh()
+                }
+
+                is ApiResult.Failure -> _state.update { current ->
+                    current.addLead?.let {
+                        current.copy(addLead = it.copy(isSaving = false, error = result.message))
+                    } ?: current
+                }
+            }
+        }
     }
 
     /** A push said the list changed — a lead was assigned. Reload quietly. */
@@ -154,7 +317,7 @@ class LeadsViewModel @Inject constructor(
     }
 
     fun onQueryChanged(value: String) {
-        _state.update { it.copy(query = value) }
+        _state.update { it.copy(query = value, isSearching = value.trim() != it.query.trim()) }
         query.value = value
     }
 
@@ -181,7 +344,11 @@ class LeadsViewModel @Inject constructor(
      */
     fun loadMore() {
         val current = _state.value
-        if (current.isLoadingMore || current.isLoading || !current.hasMore) return
+        // isRefreshing matters as much as the other two: a pull-to-refresh is a reset that
+        // has already put nextSkip back to zero, so appending on top of it would request
+        // page one again and show every row twice.
+        if (current.isLoadingMore || current.isLoading || current.isRefreshing) return
+        if (!current.hasMore) return
         load(reset = false, showSpinner = false)
     }
 
@@ -191,6 +358,7 @@ class LeadsViewModel @Inject constructor(
         if (reset) nextSkip = 0
         val skip = nextSkip
         val searchAtRequestTime = query.value
+        val filterAtRequestTime = _state.value.filter
 
         _state.update {
             it.copy(
@@ -203,14 +371,29 @@ class LeadsViewModel @Inject constructor(
         }
 
         loadJob = viewModelScope.launch {
-            when (val result = leadsRepository.fetchLeads(skip = skip, search = searchAtRequestTime)) {
+            val result = leadsRepository.fetchLeads(
+                skip = skip,
+                search = searchAtRequestTime,
+                status = filterAtRequestTime.statusApi,
+                // The dialling list never offers a junk lead, whatever status is selected.
+                isJunk = false,
+                // The browser keeps leads with no number; a lead missing its phone is
+                // exactly the one a rep needs to open and fix.
+                includeUncallable = true,
+            )
+
+            when (result) {
                 is ApiResult.Success -> {
                     val page = result.data
 
                     // The filter may have changed while this page was in flight. Dropping a
                     // stale response is cheaper and safer than letting it append rows that
                     // do not match what the rep is now looking at.
-                    if (searchAtRequestTime != query.value) return@launch
+                    if (searchAtRequestTime != query.value ||
+                        filterAtRequestTime != _state.value.filter
+                    ) {
+                        return@launch
+                    }
 
                     nextSkip = page.nextSkip
                     lastLoadedAt = System.currentTimeMillis()
@@ -222,8 +405,9 @@ class LeadsViewModel @Inject constructor(
                     if (reset) viewModelScope.launch { runCatching { reconciler.retryUnmatched("leads list refreshed") } }
 
                     // Only an unfiltered load is the whole list; arming timers from a search
-                    // result would cancel the reminders of every lead it left out.
-                    if (searchAtRequestTime.isBlank()) {
+                    // or a status filter would cancel the reminders of every lead it left
+                    // out — and a junk page would arm reminders for leads nobody will call.
+                    if (searchAtRequestTime.isBlank() && filterAtRequestTime == LeadFilter.All) {
                         val known = if (reset) page.leads else _state.value.leads + page.leads
                         viewModelScope.launch { runCatching { followUps.replan(known) } }
                     }
@@ -245,6 +429,7 @@ class LeadsViewModel @Inject constructor(
                             isLoading = false,
                             isRefreshing = false,
                             isLoadingMore = false,
+                            isSearching = false,
                         )
                     }
                 }
@@ -254,6 +439,8 @@ class LeadsViewModel @Inject constructor(
                         isLoading = false,
                         isRefreshing = false,
                         isLoadingMore = false,
+                        // Or the field would spin for ever on a search that failed.
+                        isSearching = false,
                         error = result.message,
                         errorDetail = result.detail,
                     )

@@ -6,6 +6,7 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import ai.arthax.app.data.local.prefs.AppSettings
+import ai.arthax.app.data.remote.api.ApiResult
 import ai.arthax.app.call.CallLogReader
 import ai.arthax.app.call.CallLogReconciler
 import ai.arthax.app.data.local.store.LeadLookupCache
@@ -86,6 +87,14 @@ class SettingsViewModel @Inject constructor(
         val notifyReminders: Boolean = true,
         val notifyGeneral: Boolean = true,
         val pushState: PushRegistration.State = PushRegistration.State.PENDING,
+        /** Which look the app wears. Dark is the default — see [AppSettings.ThemeMode]. */
+        val themeMode: AppSettings.ThemeMode = AppSettings.ThemeMode.DARK,
+
+        /** True while `GET /users/me` or the token re-send is in flight. */
+        val isCheckingRemote: Boolean = false,
+        /** Outcome of the last remote-calling check, shown in place under the section. */
+        val remoteMessage: String? = null,
+        val remoteMessageIsError: Boolean = false,
     ) {
         val callTrackingOn: Boolean get() = consent == AppSettings.Consent.ACCEPTED
     }
@@ -102,6 +111,7 @@ class SettingsViewModel @Inject constructor(
             val snapshot = settings.snapshot.first()
             val (name, error) = describeFolder(snapshot.recordingsTreeUri)
             val notify = settings.notificationPreferences.first()
+            val theme = settings.themeMode.first()
             val pushState = runCatching { push.state(authRepository.isLoggedIn) }
                 .getOrDefault(PushRegistration.State.NO_GOOGLE_SERVICES)
 
@@ -134,6 +144,7 @@ class SettingsViewModel @Inject constructor(
                     notifyNewLeads = notify.newLeads,
                     notifyReminders = notify.reminders,
                     notifyGeneral = notify.general,
+                    themeMode = theme,
                     pushState = pushState,
                 )
             }
@@ -158,6 +169,85 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             settings.setNotifyGeneral(on)
             _state.update { it.copy(notifyGeneral = on) }
+        }
+    }
+
+    /**
+     * Re-reads the profile from `GET /users/me`.
+     *
+     * Two things at once, which is why it earns a button of its own: it refreshes the name
+     * and role shown above, and it proves end to end that this phone's token is still
+     * accepted — the single most useful thing to know when a rep says the CRM cannot reach
+     * them.
+     */
+    fun checkRemoteCalling() {
+        if (_state.value.isCheckingRemote) return
+        _state.update { it.copy(isCheckingRemote = true, remoteMessage = null) }
+
+        viewModelScope.launch {
+            when (val result = authRepository.refreshProfile()) {
+                is ApiResult.Success -> {
+                    refresh()
+                    _state.update {
+                        it.copy(
+                            isCheckingRemote = false,
+                            remoteMessage = "Signed in and reachable. Your profile is up to date.",
+                            remoteMessageIsError = false,
+                        )
+                    }
+                }
+
+                is ApiResult.Failure -> _state.update {
+                    it.copy(
+                        isCheckingRemote = false,
+                        remoteMessage = result.message,
+                        remoteMessageIsError = true,
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Sends this phone's push token to the server again.
+     *
+     * The repair for a phone the CRM cannot ring. Deliberately unconditional: the state
+     * saying "registered" is the app's own record of what it believes it sent, and that
+     * belief is exactly what is in doubt when a rep reaches for this.
+     */
+    fun reregisterForRemoteCalls() {
+        if (_state.value.isCheckingRemote) return
+        _state.update { it.copy(isCheckingRemote = true, remoteMessage = null) }
+
+        viewModelScope.launch {
+            val registered = runCatching { push.reregister() }.getOrDefault(false)
+            refresh()
+            _state.update {
+                it.copy(
+                    isCheckingRemote = false,
+                    remoteMessage = if (registered) {
+                        "This phone is registered for calls from the CRM."
+                    } else {
+                        "Could not register this phone. Check you are signed in and online."
+                    },
+                    remoteMessageIsError = !registered,
+                )
+            }
+        }
+    }
+
+    fun dismissRemoteMessage() = _state.update { it.copy(remoteMessage = null) }
+
+    /**
+     * Light, dark, or whatever the phone is set to.
+     *
+     * Nothing here re-reads the theme: MainActivity collects the same preference, so writing
+     * it is all that is needed and the whole tree repaints on the next frame.
+     */
+    fun setThemeMode(mode: AppSettings.ThemeMode) {
+        viewModelScope.launch {
+            settings.setThemeMode(mode)
+            _state.update { it.copy(themeMode = mode) }
         }
     }
 
