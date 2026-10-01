@@ -44,8 +44,8 @@ android {
         // Must always exceed the last build of the previous app (30).
         // CI passes -PversionCodeOverride (see .github/workflows/release.yml) so every push to
         // main gets a strictly increasing code; local builds keep the number below.
-        versionCode = (project.findProperty("versionCodeOverride") as String?)?.toInt() ?: 33
-        versionName = "3.1.1"
+        versionCode = (project.findProperty("versionCodeOverride") as String?)?.toInt() ?: 34
+        versionName = "3.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
