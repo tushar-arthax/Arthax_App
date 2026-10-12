@@ -46,6 +46,13 @@ class LeadResolver @Inject constructor(
              * call and belongs in the CRM; filtering it out here would silently discard it.
              */
             val isJunk: Boolean = false,
+            /**
+             * What the caller-ID card shows under the name. Only the live `by-phone` answer
+             * fills these; an offline-cache hit carries the name alone.
+             */
+            val status: String? = null,
+            val company: String? = null,
+            val assignedToName: String? = null,
         ) : Resolution {
             val fromCache: Boolean get() = source == MatchSource.LEAD_CACHE
         }
@@ -121,7 +128,15 @@ class LeadResolver @Inject constructor(
                 leadName = name,
             )
         }
-        return Resolution.Lead(lead.id, name, MatchSource.BY_PHONE, isJunk = lead.isJunk)
+        return Resolution.Lead(
+            id = lead.id,
+            name = name,
+            source = MatchSource.BY_PHONE,
+            isJunk = lead.isJunk,
+            status = lead.status,
+            company = lead.company,
+            assignedToName = lead.assignedToName,
+        )
     }
 
     private suspend fun reject(rawNumber: String?): Resolution {

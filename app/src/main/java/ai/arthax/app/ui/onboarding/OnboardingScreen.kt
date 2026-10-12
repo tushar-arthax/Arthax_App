@@ -21,6 +21,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import ai.arthax.app.ui.theme.ArthaxIcons
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
@@ -43,6 +44,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ai.arthax.app.callerid.CallerIdSetup
 import ai.arthax.app.core.ApiConfig
 import ai.arthax.app.ui.common.AppPermissions
 import ai.arthax.app.ui.common.DeviceSetup
@@ -85,7 +87,7 @@ fun OnboardingScreen(
         Text("Set up Arthax", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(8.dp))
         Text(
-            text = "Three quick steps so calls get linked to the right lead automatically.",
+            text = "A few quick steps so calls get linked to the right lead automatically.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -245,6 +247,54 @@ fun OnboardingScreen(
             }
         }
 
+        SetupStep(
+            index = 4,
+            icon = Icons.Default.Call,
+            title = "Show lead names on incoming calls",
+            description = "Like Truecaller, but only for your organisation's leads: when a " +
+                "lead calls, their name and status appear over the call screen.",
+            isDone = state.callerIdSetup.isComplete || state.callerIdAcknowledged,
+            isOptional = true,
+        ) {
+            if (!state.callerIdSetup.overlayAllowed) {
+                OutlinedButton(
+                    onClick = { settingsLauncher.launch(CallerIdSetup.overlayPermissionIntent(context)) },
+                ) {
+                    Text("Allow display over other apps")
+                }
+            } else {
+                Text(
+                    text = "Can show the lead card over the call screen. Good.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = statusColors.success,
+                )
+            }
+
+            if (state.callerIdSetup.screeningRoleSupported) {
+                Spacer(Modifier.height(8.dp))
+                if (!state.callerIdSetup.screeningRoleHeld) {
+                    OutlinedButton(
+                        onClick = {
+                            CallerIdSetup.screeningRoleIntent(context)?.let { settingsLauncher.launch(it) }
+                        },
+                    ) {
+                        Text("Set Arthax as the caller ID app")
+                    }
+                } else {
+                    Text(
+                        text = "Arthax is the phone's caller ID app. Good.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = statusColors.success,
+                    )
+                }
+            }
+
+            if (!state.callerIdSetup.isComplete && !state.callerIdAcknowledged) {
+                Spacer(Modifier.height(4.dp))
+                TextButton(onClick = viewModel::acknowledgeCallerId) { Text("Skip for now") }
+            }
+        }
+
         Spacer(Modifier.height(24.dp))
 
         Button(
@@ -262,7 +312,7 @@ fun OnboardingScreen(
         if (!state.canFinish) {
             Spacer(Modifier.height(8.dp))
             Text(
-                text = "Steps 1 and 2 are required. Step 3 is strongly recommended.",
+                text = "Steps 1 and 2 are required. Steps 3 and 4 are strongly recommended.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

@@ -107,7 +107,50 @@ class AppNotifications @Inject constructor(
                 description = "Everything else the CRM sends."
             },
         )
+
+        // HIGH so it shows as a heads-up over the incoming-call screen; silent per
+        // notification, because the phone is already ringing.
+        manager.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_CALLER_ID,
+                "Caller ID",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = "Which lead is calling, shown while the phone rings."
+                setShowBadge(false)
+                setSound(null, null)
+                enableVibration(false)
+            },
+        )
     }
+
+    /**
+     * The fallback for caller ID when the rep has not allowed Arthax to draw over other
+     * apps: a heads-up notification naming the lead, posted while the phone rings and
+     * taken down the moment the call is answered or ends.
+     */
+    fun notifyIncomingLead(
+        leadId: String,
+        leadName: String,
+        subtitle: String?,
+        phone: String,
+    ) {
+        if (!canPost()) return
+        val notification = NotificationCompat.Builder(context, CHANNEL_CALLER_ID)
+            .setSmallIcon(R.drawable.ic_stat_arthax)
+            .setContentTitle("$leadName is calling")
+            .setContentText(subtitle?.takeIf { it.isNotBlank() } ?: "Arthax lead · $phone")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setOngoing(true)
+            .setSilent(true)
+            .setTimeoutAfter(INCOMING_LEAD_TIMEOUT_MILLIS)
+            .setContentIntent(openAppIntent(INCOMING_LEAD_NOTIFICATION_ID, MainTab.LEADS, leadId))
+            .build()
+        NotificationManagerCompat.from(context).notify(INCOMING_LEAD_NOTIFICATION_ID, notification)
+    }
+
+    fun cancelIncomingLead() = cancel(INCOMING_LEAD_NOTIFICATION_ID)
 
     fun callTrackingNotification(leadName: String): Notification =
         NotificationCompat.Builder(context, CHANNEL_CALL)
@@ -399,11 +442,16 @@ class AppNotifications @Inject constructor(
         const val CHANNEL_LEADS = "leads"
         const val CHANNEL_REMINDERS = "reminders"
         const val CHANNEL_GENERAL = "general"
+        const val CHANNEL_CALLER_ID = "caller_id"
 
         const val CALL_SERVICE_NOTIFICATION_ID = 1001
         const val HARVEST_NOTIFICATION_ID = 1002
         const val SYNC_NOTIFICATION_ID = 1003
         const val DEVICE_ALERT_NOTIFICATION_ID = 1004
+        const val INCOMING_LEAD_NOTIFICATION_ID = 1005
+
+        /** A ring rarely lasts longer; a stale "is calling" card must never outlive the call. */
+        private const val INCOMING_LEAD_TIMEOUT_MILLIS = 90_000L
         private const val BASE_FAILURE_ID = 2000
         private const val BASE_REVIEW_ID = 3000
         private const val BASE_DIAL_ID = 4000

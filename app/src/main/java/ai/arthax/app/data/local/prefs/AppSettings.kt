@@ -131,6 +131,29 @@ class AppSettings(private val context: Context) {
      * should still open the app and see the brand, not a white approximation of it. Both
      * looks are complete and fully legible; this only decides which one is shown first.
      */
+    /**
+     * Whether a lead's name is shown over the incoming-call screen. On by default: it is
+     * the feature reps asked for by name ("like Truecaller"), and it reveals nothing the
+     * rep could not see by opening the lead list — only leads of their own organisation
+     * are ever shown.
+     */
+    val callerIdEnabled: Flow<Boolean> = context.dataStore.data.map { p ->
+        p[KEY_CALLER_ID_ENABLED] ?: true
+    }
+
+    suspend fun setCallerIdEnabled(on: Boolean) = context.dataStore.edit { p ->
+        p[KEY_CALLER_ID_ENABLED] = on
+    }
+
+    /** Whether the setup step for caller ID was passed (granted or skipped) during onboarding. */
+    val callerIdPromptShown: Flow<Boolean> = context.dataStore.data.map { p ->
+        p[KEY_CALLER_ID_PROMPT] ?: false
+    }
+
+    suspend fun setCallerIdPromptShown(shown: Boolean) = context.dataStore.edit { p ->
+        p[KEY_CALLER_ID_PROMPT] = shown
+    }
+
     enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
     val themeMode: Flow<ThemeMode> = context.dataStore.data.map { p ->
@@ -290,6 +313,8 @@ class AppSettings(private val context: Context) {
 
     companion object {
         private val KEY_TREE_URI = stringPreferencesKey("recordings_tree_uri")
+        private val KEY_CALLER_ID_ENABLED = booleanPreferencesKey("caller_id_enabled")
+        private val KEY_CALLER_ID_PROMPT = booleanPreferencesKey("caller_id_prompt_shown")
         private val KEY_CALL_MODE = stringPreferencesKey("call_mode")
         private val KEY_ONBOARDING_DONE = booleanPreferencesKey("onboarding_complete")
         private val KEY_SCAN_TIMEOUT = intPreferencesKey("scan_timeout_seconds")

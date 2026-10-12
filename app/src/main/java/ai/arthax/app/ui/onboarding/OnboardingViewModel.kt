@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import ai.arthax.app.callerid.CallerIdSetup
 import ai.arthax.app.data.local.prefs.AppSettings
 import ai.arthax.app.data.local.store.RemoteConfigStore
 import ai.arthax.app.data.repository.EventLogger
@@ -50,6 +51,8 @@ class OnboardingViewModel @Inject constructor(
         val folderHint: String = "",
         val completed: Boolean = false,
         val callLogBlocked: Boolean = false,
+        val callerIdSetup: CallerIdSetup.Status = CallerIdSetup.Status(false, false, false),
+        val callerIdAcknowledged: Boolean = false,
     ) {
         val disclosureAccepted: Boolean get() = consent == AppSettings.Consent.ACCEPTED
         val permissionsDone: Boolean get() = missingRequiredPermissions.isEmpty()
@@ -101,6 +104,8 @@ class OnboardingViewModel @Inject constructor(
                     manufacturer = DeviceSetup.manufacturerLabel(),
                     needsAutostart = DeviceSetup.needsAutostartGrant(),
                     folderHint = ai.arthax.app.ui.common.RecordingFolderHints.humanHint(configStore.current),
+                    callerIdSetup = CallerIdSetup.status(context),
+                    callerIdAcknowledged = settings.callerIdPromptShown.first(),
                 )
             }
         }
@@ -161,6 +166,11 @@ class OnboardingViewModel @Inject constructor(
                 logger.error(LogStage.SETUP, "Could not use the selected folder", detail = message)
             }
         }
+    }
+
+    fun acknowledgeCallerId() {
+        _state.update { it.copy(callerIdAcknowledged = true) }
+        viewModelScope.launch { settings.setCallerIdPromptShown(true) }
     }
 
     fun acknowledgeAutostart() {

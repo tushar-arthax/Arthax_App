@@ -59,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ai.arthax.app.BuildConfig
+import ai.arthax.app.callerid.CallerIdSetup
 import ai.arthax.app.core.ApiConfig
 import ai.arthax.app.data.local.prefs.AppSettings
 import ai.arthax.app.domain.model.CallMode
@@ -329,6 +330,18 @@ fun SettingsScreen(
                 steps = 10,
             )
         }
+
+        CallerIdSection(
+            enabled = state.callerIdEnabled,
+            setup = state.callerIdSetup,
+            onToggle = viewModel::setCallerIdEnabled,
+            onRequestRole = {
+                CallerIdSetup.screeningRoleIntent(context)?.let { settingsLauncher.launch(it) }
+            },
+            onRequestOverlay = {
+                settingsLauncher.launch(CallerIdSetup.overlayPermissionIntent(context))
+            },
+        )
 
         SettingsSection(title = "Notifications") {
             NotificationSwitch(
@@ -657,6 +670,65 @@ private fun RemoteCallingSection(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+/**
+ * Truecaller-style caller ID, limited to this organisation's leads.
+ *
+ * Two optional grants, each with its own status line and button, because they are asked
+ * for on two different system screens and either can be revoked later from Settings.
+ */
+@Composable
+private fun CallerIdSection(
+    enabled: Boolean,
+    setup: CallerIdSetup.Status,
+    onToggle: (Boolean) -> Unit,
+    onRequestRole: () -> Unit,
+    onRequestOverlay: () -> Unit,
+) {
+    SettingsSection(title = "Caller ID") {
+        NotificationSwitch(
+            title = "Show lead names on incoming calls",
+            description = "When a lead from your organisation's CRM calls, their name and " +
+                "status are shown over the incoming-call screen. Numbers that are not leads " +
+                "are never looked up anywhere else.",
+            checked = enabled,
+            onChange = onToggle,
+        )
+
+        if (!enabled) return@SettingsSection
+
+        Spacer(Modifier.height(8.dp))
+
+        StatusLine(
+            ok = setup.overlayAllowed,
+            text = if (setup.overlayAllowed) {
+                "Can show the lead card over the call screen"
+            } else {
+                "Shown as a notification only — allow display over other apps for the card"
+            },
+        )
+        if (!setup.overlayAllowed) {
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onRequestOverlay) { Text("Allow display over other apps") }
+        }
+
+        if (setup.screeningRoleSupported) {
+            Spacer(Modifier.height(12.dp))
+            StatusLine(
+                ok = setup.screeningRoleHeld,
+                text = if (setup.screeningRoleHeld) {
+                    "Arthax is the phone's caller ID app"
+                } else {
+                    "Make Arthax the caller ID app so every ring is named, on every phone"
+                },
+            )
+            if (!setup.screeningRoleHeld) {
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(onClick = onRequestRole) { Text("Set as caller ID app") }
+            }
         }
     }
 }

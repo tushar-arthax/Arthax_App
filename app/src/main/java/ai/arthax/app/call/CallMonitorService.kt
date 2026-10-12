@@ -20,6 +20,7 @@ import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import ai.arthax.app.callerid.CallerIdPresenter
 import ai.arthax.app.data.local.prefs.SecureTokenStore
 import ai.arthax.app.data.repository.EventLogger
 import ai.arthax.app.domain.model.LogStage
@@ -64,6 +65,8 @@ class CallMonitorService : android.app.Service() {
     @Inject lateinit var notifications: AppNotifications
 
     @Inject lateinit var logger: EventLogger
+
+    @Inject lateinit var callerId: CallerIdPresenter
 
     private val handler = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -119,6 +122,9 @@ class CallMonitorService : android.app.Service() {
             // Registration also reports the current state, usually idle. That just runs a
             // few quiet passes, which is harmless, so it is not filtered out.
             if (state == TelephonyManager.CALL_STATE_IDLE) handler.post { armFollowUps() }
+            // Android 12+ gives no number here, so this cannot *start* caller ID — but it
+            // is the most reliable signal that the ring is over, on every OEM.
+            if (state != TelephonyManager.CALL_STATE_RINGING) callerId.onCallEnded()
         }
     }
 
@@ -129,6 +135,14 @@ class CallMonitorService : android.app.Service() {
             @Deprecated("Deprecated in Java")
             override fun onCallStateChanged(state: Int, phoneNumber: String?) {
                 if (state == TelephonyManager.CALL_STATE_IDLE) armFollowUps()
+                // On Android 11 and earlier the listener carries the number (READ_CALL_LOG
+                // is held), so a ring that reached neither the screening service nor the
+                // broadcast is still named from here.
+                if (state == TelephonyManager.CALL_STATE_RINGING) {
+                    callerId.onRinging(phoneNumber, source = "line watcher")
+                } else {
+                    callerId.onCallEnded()
+                }
             }
         }
     }

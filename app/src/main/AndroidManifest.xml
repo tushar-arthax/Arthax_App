@@ -33,6 +33,13 @@
 
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!--
+      Caller ID. The lead's name is drawn over the phone's incoming-call screen, the way
+      Truecaller does it. Granted from a system screen, never silently, and optional: without
+      it the same card is posted as a heads-up notification instead.
+    -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
     <!-- Lets WorkManager re-arm pending uploads after a restart. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
@@ -171,9 +178,25 @@
             tools:node="merge" />
 
         <!--
+          Caller ID, Android 10+. Bound by the system for every incoming call once the rep
+          has made Arthax the call-screening app (RoleManager.ROLE_CALL_SCREENING, asked for
+          from Settings and setup). Only ever answers "allow" - it names the lead and
+          nothing else. See callerid/CallerIdScreeningService.kt.
+        -->
+        <service
+            android:name=".callerid.CallerIdScreeningService"
+            android:exported="true"
+            android:permission="android.permission.BIND_SCREENING_SERVICE">
+            <intent-filter>
+                <action android:name="android.telecom.CallScreeningService" />
+            </intent-filter>
+        </service>
+
+        <!--
           Manifest-registered so it still fires when the app has been evicted from memory.
           ACTION_PHONE_STATE_CHANGED is exempt from the Android 8 implicit-broadcast
-          restrictions, so this stays reliable on current Android.
+          restrictions, so this stays reliable on current Android. Also the fallback source
+          of the incoming number for caller ID (RINGING carries it with READ_CALL_LOG held).
         -->
         <receiver
             android:name=".call.CallStateReceiver"

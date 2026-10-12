@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import ai.arthax.app.callerid.CallerIdSetup
 import ai.arthax.app.data.local.prefs.AppSettings
 import ai.arthax.app.data.remote.api.ApiResult
 import ai.arthax.app.call.CallLogReader
@@ -83,6 +84,8 @@ class SettingsViewModel @Inject constructor(
         val folderPickerStart: Uri? = null,
         val configVersion: Int = 0,
         val lookbackHours: Int = 0,
+        val callerIdEnabled: Boolean = true,
+        val callerIdSetup: CallerIdSetup.Status = CallerIdSetup.Status(false, false, false),
         val notifyNewLeads: Boolean = true,
         val notifyReminders: Boolean = true,
         val notifyGeneral: Boolean = true,
@@ -112,6 +115,7 @@ class SettingsViewModel @Inject constructor(
             val (name, error) = describeFolder(snapshot.recordingsTreeUri)
             val notify = settings.notificationPreferences.first()
             val theme = settings.themeMode.first()
+            val callerId = settings.callerIdEnabled.first()
             val pushState = runCatching { push.state(authRepository.isLoggedIn) }
                 .getOrDefault(PushRegistration.State.NO_GOOGLE_SERVICES)
 
@@ -141,6 +145,8 @@ class SettingsViewModel @Inject constructor(
                     folderPickerStart = RecordingFolderHints.initialTreeUri(configStore.current),
                     configVersion = configStore.current.version,
                     lookbackHours = configStore.current.lookbackHours,
+                    callerIdEnabled = callerId,
+                    callerIdSetup = CallerIdSetup.status(context),
                     notifyNewLeads = notify.newLeads,
                     notifyReminders = notify.reminders,
                     notifyGeneral = notify.general,
@@ -148,6 +154,13 @@ class SettingsViewModel @Inject constructor(
                     pushState = pushState,
                 )
             }
+        }
+    }
+
+    fun setCallerIdEnabled(on: Boolean) {
+        viewModelScope.launch {
+            settings.setCallerIdEnabled(on)
+            _state.update { it.copy(callerIdEnabled = on) }
         }
     }
 

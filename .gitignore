@@ -21,3 +21,6 @@ app/build
 # Build outputs. The signed APK/AAB for a release is attached to the release, not committed.
 *.apk
 *.aab
+
+# Local APK drops for sideload distribution; never committed.
+/dist
