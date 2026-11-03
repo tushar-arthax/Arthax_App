@@ -5,6 +5,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import ai.arthax.app.data.local.prefs.AppSettings
 import ai.arthax.app.data.remote.dto.ApiTime
 import ai.arthax.app.data.repository.EventLogger
+import ai.arthax.app.data.repository.NotificationsRepository
 import ai.arthax.app.data.repository.RemoteConfigRepository
 import ai.arthax.app.data.repository.SyncHealthReporter
 import ai.arthax.app.domain.model.LogStage
@@ -33,6 +34,7 @@ class AndroidPushHandler @Inject constructor(
     private val healthReporter: SyncHealthReporter,
     private val remoteConfig: RemoteConfigRepository,
     private val logger: EventLogger,
+    private val inbox: NotificationsRepository,
 ) : PushHandler {
 
     /**
@@ -111,7 +113,9 @@ class AndroidPushHandler @Inject constructor(
     }
 
     override suspend fun onNotification(message: PushMessage.Notification) {
-        notifications.notifyGeneral(message.title, message.body)
+        notifications.notifyCrmNotification(message)
+        // A new one is unread: bring the tab badge up to date. Quiet on failure.
+        if (message.notificationId != null) runCatching { inbox.refreshUnread() }
     }
 
     /**

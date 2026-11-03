@@ -5,10 +5,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -40,6 +43,10 @@ import ai.arthax.app.ui.leads.LeadsScreen
 import ai.arthax.app.ui.login.LoginScreen
 import ai.arthax.app.ui.logs.LogsScreen
 import ai.arthax.app.ui.meetings.MeetingsScreen
+import ai.arthax.app.ui.notifications.NotificationBadgeViewModel
+import ai.arthax.app.ui.notifications.NotificationsScreen
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import ai.arthax.app.ui.onboarding.OnboardingScreen
 import ai.arthax.app.ui.otp.OtpScreen
 import ai.arthax.app.ui.otp.OtpViewModel
@@ -129,6 +136,8 @@ enum class MainTab(
     LEADS("Leads", Icons.Default.Person, "leads"),
     MEETINGS("Meetings", Icons.Default.DateRange, "meetings"),
     LOGS("Activity", Icons.AutoMirrored.Filled.List, "activity"),
+    /** The CRM's notifications — the same list as the web bell. */
+    NOTIFICATIONS("Alerts", Icons.Default.Notifications, "notifications"),
     SETTINGS("Settings", Icons.Default.Settings, "settings"),
     ;
 
@@ -138,7 +147,11 @@ enum class MainTab(
 }
 
 @Composable
-private fun MainScaffold(navRequests: NavRequests, modifier: Modifier = Modifier) {
+private fun MainScaffold(
+    navRequests: NavRequests,
+    modifier: Modifier = Modifier,
+    badgeViewModel: NotificationBadgeViewModel = hiltViewModel(),
+) {
     // Opens on the first tab. Change this one value to land somewhere else — Leads is the
     // obvious alternative, since dialling rather than reviewing is what a rep opens the app
     // to do.
@@ -153,6 +166,11 @@ private fun MainScaffold(navRequests: NavRequests, modifier: Modifier = Modifier
     val leadFocus = navRequest
         ?.takeIf { it.tab == MainTab.LEADS && (it.leadId != null || it.search != null) }
         ?.let { LeadFocus(leadId = it.leadId, search = it.search, nonce = it.nonce) }
+
+    // Unread CRM notifications, on the Alerts tab. Refreshed each time the app comes back
+    // to the front; a push and every read refresh it too.
+    val unread by badgeViewModel.unread.collectAsStateWithLifecycle()
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { badgeViewModel.refresh() }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -170,7 +188,15 @@ private fun MainScaffold(navRequests: NavRequests, modifier: Modifier = Modifier
                         NavigationBarItem(
                             selected = selectedTab == tab,
                             onClick = { selectedTab = tab },
-                            icon = { Icon(tab.icon, contentDescription = tab.label) },
+                            icon = {
+                                if (tab == MainTab.NOTIFICATIONS && unread > 0) {
+                                    BadgedBox(badge = { Badge { Text(if (unread > 99) "99+" else unread.toString()) } }) {
+                                        Icon(tab.icon, contentDescription = "${tab.label}, $unread unread")
+                                    }
+                                } else {
+                                    Icon(tab.icon, contentDescription = tab.label)
+                                }
+                            },
                             label = { Text(tab.label) },
                             colors = NavigationBarItemDefaults.colors(
                                 // The selected tab is the one place other than CALL where
@@ -200,6 +226,13 @@ private fun MainScaffold(navRequests: NavRequests, modifier: Modifier = Modifier
             MainTab.MEETINGS -> MeetingsScreen(modifier = Modifier.padding(padding))
 
             MainTab.LOGS -> LogsScreen(modifier = Modifier.padding(padding))
+
+            MainTab.NOTIFICATIONS -> NotificationsScreen(
+                // Where a tapped notification points, through the same path as a tap on
+                // the system notification.
+                onOpen = { target -> navRequests.post(target.toNavRequest()) },
+                modifier = Modifier.padding(padding),
+            )
 
             MainTab.SETTINGS -> SettingsScreen(
                 // Logging out flips the root destination; no navigation needed here.

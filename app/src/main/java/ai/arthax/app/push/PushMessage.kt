@@ -58,13 +58,25 @@ sealed interface PushMessage {
         val phone: String?,
     ) : PushMessage
 
-    /** `notification`: free-form, shown as given. */
+    /**
+     * `notification`: free-form, shown as given.
+     *
+     * Also every in-app notification the CRM creates — follow-up, meeting and revenue
+     * reminders, call alerts, credits, WhatsApp, support access, announcements. The backend
+     * pushes each of those with `action=NEW_NOTIFICATION` and no `type`, the same title and
+     * body as the web bell, and the fields below; see `docs/push-notifications.md` in the
+     * backend repo.
+     */
     data class Notification(
         val title: String,
         val body: String,
         val notificationType: String,
         val entityType: String?,
         val entityId: String?,
+        /** The server's id for it, used to mark it read. Null on the older payload. */
+        val notificationId: String? = null,
+        /** What it is about: one of [NotificationCategories.ALL], `other` when absent. */
+        val category: String = NotificationCategories.OTHER,
     ) : PushMessage
 
     /** `sync_now`: the server wants the call log checked and a heartbeat sent. */
@@ -89,14 +101,24 @@ sealed interface PushMessage {
         /** The previous app's contract: `action=DIAL_LEAD` with `phone_number`. */
         const val LEGACY_ACTION_DIAL = "DIAL_LEAD"
 
+        /**
+         * The CRM's in-app notifications carry `action=NEW_NOTIFICATION` and no `type`.
+         * When they arrive with the app on screen the messaging service already folds them
+         * into `notification`; this covers the same payload arriving as data only.
+         */
+        const val ACTION_NEW_NOTIFICATION = "NEW_NOTIFICATION"
+
         /** Null for anything that cannot be acted on. Never throws. */
         fun parse(data: Map<String, String>): PushMessage? {
             fun text(key: String): String = data[key]?.trim().orEmpty()
             fun textOrNull(key: String): String? = text(key).takeIf { it.isNotEmpty() }
             fun int(key: String): Int? = textOrNull(key)?.toIntOrNull()
 
-            val type = textOrNull("type")
-                ?: if (text("action") == LEGACY_ACTION_DIAL) TYPE_DIAL else return null
+            val type = textOrNull("type") ?: when (text("action")) {
+                LEGACY_ACTION_DIAL -> TYPE_DIAL
+                ACTION_NEW_NOTIFICATION -> TYPE_NOTIFICATION
+                else -> return null
+            }
 
             return when (type) {
                 TYPE_DIAL -> {
@@ -137,7 +159,8 @@ sealed interface PushMessage {
 
                 TYPE_NOTIFICATION -> {
                     val title = text("title")
-                    val body = text("body")
+                    // `body` on this app's own contract, `message` on the CRM's notifications.
+                    val body = textOrNull("body") ?: text("message")
                     // Nothing to show is nothing to show.
                     if (title.isEmpty() && body.isEmpty()) return null
                     Notification(
@@ -146,6 +169,8 @@ sealed interface PushMessage {
                         notificationType = text("notification_type"),
                         entityType = textOrNull("entity_type"),
                         entityId = textOrNull("entity_id"),
+                        notificationId = textOrNull("notification_id"),
+                        category = NotificationCategories.normalise(textOrNull("category")),
                     )
                 }
 
@@ -173,11 +198,17 @@ data class NotificationPreferences(
     val reminders: Boolean = true,
     val general: Boolean = true,
 ) {
-    /** Whether this message may be shown. Anything silent (sync, config) is always allowed. */
+    /**
+     * Whether this message may be shown. Anything silent (sync, config) is always allowed.
+     *
+     * A CRM notification about a follow-up or a meeting is a reminder, so the Reminders
+     * switch governs it like the typed reminders above; every other one is General.
+     */
     fun allows(message: PushMessage): Boolean = when (message) {
         is PushMessage.LeadAssigned -> newLeads
         is PushMessage.FollowUpDue, is PushMessage.MeetingReminder -> reminders
-        is PushMessage.Notification -> general
+        is PushMessage.Notification ->
+            if (message.category in NotificationCategories.REMINDER_CATEGORIES) reminders else general
         else -> true
     }
 }

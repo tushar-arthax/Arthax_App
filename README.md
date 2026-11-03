@@ -85,12 +85,26 @@ thread whose crash takes the call watcher with it. The old `action=DIAL_LEAD` /
 | `follow_up_due` | `lead_id`, `lead_name`, `phone`, `due_at` (ISO), `minutes_left` | Reminders channel: "Follow-up in N min: *name*", **Call** when a phone is present. Recorded in the reminded set so the on-device timer for the same follow-up stays quiet. |
 | `meeting_reminder` | `meeting_id`, `title`, `scheduled_at`, `minutes_left`, `lead_id?`, `phone?` | "Meeting in N min: *title*", **Call** when a phone is present; tap opens Leads. |
 | `notification` | `title`, `body`, `notification_type`, `entity_type?`, `entity_id?` | General channel, shown as given; tap opens the app. |
+| *(none)*, `action=NEW_NOTIFICATION` | `notification_id`, `title`, `message`, `notification_type`, `category`, `entity_type`, `entity_id`, `created_at`, `channel_id` | Every CRM notification the web bell shows (follow-ups, meetings, revenue, call alerts, credits, WhatsApp, support access, announcements), sent with a notification block on channel `arthax_<category>`. App closed: Android shows it. App open: shown by the app on the same channel and tag. Tap opens the lead / Meetings / Calls, or the Alerts tab, and marks it read. Follow-up and meeting ones obey the Reminders switch, the rest General. |
 | `sync_now` | `reason` | Enqueues a call-log reconcile through WorkManager and sends a heartbeat. Nothing shown. |
 | `config_updated` | `version` | Fetches the server config if this version differs. Nothing shown. |
 | `device_alert` | `health` (`warning`/`critical`), `message` | "Call tracking needs attention" + message; tap opens Settings. |
 
 Channels: `calls_from_crm` (high, sound + vibration), `leads` (default), `reminders`
 (high), `general` (default), alongside the existing call-tracking and uploads channels.
+CRM notifications get one channel per category under a "CRM notifications" group
+(`arthax_follow_up`, `arthax_meeting`, `arthax_revenue`, `arthax_call_alert`,
+`arthax_credits`, `arthax_whatsapp`, `arthax_support_access`, `arthax_announcement`,
+`arthax_other`; `push/CrmNotifications.kt`). The ids must match the backend's
+`channel_id`.
+
+**Alerts tab.** The CRM's notifications list, same as the web bell
+(`ui/notifications/`): category chips with unread counts, All / Unread / Read, date
+presets (today, yesterday, 7 / 30 days, this month), search, paging as the list scrolls,
+mark read, and mark all read for the current category and dates. The tab badge is the
+server's unread count (`GET /api/notifications/summary`), refreshed on resume, on push and
+on every read. Endpoints: `GET /api/notifications/feed`, `GET /api/notifications/summary`,
+`PATCH /api/notifications/{id}/read`, `POST /api/notifications/read-all`.
 Settings has switches for new leads, reminders and general (calls from the CRM are shown
 locked on), the push registration state, and a link to the system notification settings.
 No full-screen intents are used.

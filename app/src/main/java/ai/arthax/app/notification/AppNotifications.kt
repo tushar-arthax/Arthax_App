@@ -3,6 +3,7 @@ package ai.arthax.app.notification
 import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
+import android.app.NotificationChannelGroup
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
@@ -17,7 +18,9 @@ import ai.arthax.app.R
 import ai.arthax.app.domain.model.MatchSource
 import ai.arthax.app.push.DialRequest
 import ai.arthax.app.push.DialRequestActivity
+import ai.arthax.app.push.NotificationCategories
 import ai.arthax.app.push.NotificationDismissReceiver
+import ai.arthax.app.push.PushMessage
 import ai.arthax.app.ui.navigation.MainTab
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -122,6 +125,34 @@ class AppNotifications @Inject constructor(
                 enableVibration(false)
             },
         )
+
+        ensureCrmChannels(manager)
+    }
+
+    /**
+     * One channel per CRM notification category, ids `arthax_<category>`, grouped under
+     * "CRM notifications" in the system settings.
+     *
+     * The ids are the backend's `channel_id`. With the app in the background Android posts
+     * the push itself on exactly that channel; without these it would fall back to the
+     * default channel and the rep could not mute, say, revenue without muting everything.
+     */
+    private fun ensureCrmChannels(manager: NotificationManager) {
+        manager.createNotificationChannelGroup(NotificationChannelGroup(GROUP_CRM, "CRM notifications"))
+        NotificationCategories.ALL.forEach { category ->
+            val (name, description) = CRM_CHANNELS.getValue(category)
+            val importance = if (category in HIGH_IMPORTANCE_CATEGORIES) {
+                NotificationManager.IMPORTANCE_HIGH
+            } else {
+                NotificationManager.IMPORTANCE_DEFAULT
+            }
+            manager.createNotificationChannel(
+                NotificationChannel(NotificationCategories.channelId(category), name, importance).apply {
+                    this.description = description
+                    group = GROUP_CRM
+                },
+            )
+        }
     }
 
     /**
@@ -347,6 +378,44 @@ class AppNotifications @Inject constructor(
         NotificationManagerCompat.from(context).notify(id, builder.build())
     }
 
+    /**
+     * A CRM notification received with the app on screen (in the background Android posts
+     * it itself). Same channel, same tag and the same tap extras as the one Android would
+     * post, so the two cannot look or behave differently, and a repeat replaces rather than
+     * stacks.
+     */
+    fun notifyCrmNotification(message: PushMessage.Notification) {
+        val notificationId = message.notificationId
+        if (notificationId == null) {
+            // The older payload has no id to mark read or deep-link with.
+            notifyGeneral(message.title, message.body)
+            return
+        }
+        if (!canPost()) return
+
+        val requestCode = BASE_CRM_ID + (notificationId.hashCode() and 0xFFF)
+        val urgent = message.notificationType in URGENT_NOTIFICATION_TYPES
+        val notification = NotificationCompat.Builder(context, NotificationCategories.channelId(message.category))
+            .setSmallIcon(R.drawable.ic_stat_arthax)
+            .setContentTitle(message.title)
+            .setContentText(message.body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(message.body))
+            .setPriority(if (urgent) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .setContentIntent(
+                PendingIntent.getActivity(
+                    context,
+                    requestCode,
+                    MainActivity.notificationTapIntent(context, notificationId, message.entityType, message.entityId),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                ),
+            )
+            .build()
+
+        // Tagged with the server id, as the backend tags the one Android posts.
+        NotificationManagerCompat.from(context).notify(notificationId, CRM_NOTIFICATION_ID, notification)
+    }
+
     /** Free-form from the server, shown as given. */
     fun notifyGeneral(title: String, body: String) {
         if (!canPost()) return
@@ -458,6 +527,40 @@ class AppNotifications @Inject constructor(
         private const val BASE_LEAD_ID = 5000
         private const val BASE_REMINDER_ID = 6000
         private const val BASE_GENERAL_ID = 7000
+        private const val BASE_CRM_ID = 8000
+
+        /**
+         * The id half of a CRM notification's (tag, id). The tag is the server's
+         * notification id; FCM posts its own with id 0, so this is 0 as well and the two
+         * replace each other.
+         */
+        private const val CRM_NOTIFICATION_ID = 0
+
+        const val GROUP_CRM = "crm_notifications"
+
+        /** Things a rep has to act on now heads-up; the rest arrive quietly. */
+        private val HIGH_IMPORTANCE_CATEGORIES = setOf(
+            NotificationCategories.FOLLOW_UP,
+            NotificationCategories.MEETING,
+            NotificationCategories.CALL_ALERT,
+            NotificationCategories.WHATSAPP,
+            NotificationCategories.SUPPORT_ACCESS,
+        )
+
+        private val URGENT_NOTIFICATION_TYPES = setOf("alert", "action_required", "reminder")
+
+        /** Name and description shown in the system settings, per category. */
+        private val CRM_CHANNELS: Map<String, Pair<String, String>> = mapOf(
+            NotificationCategories.FOLLOW_UP to ("Follow-up reminders" to "A follow-up with one of your leads is coming up."),
+            NotificationCategories.MEETING to ("Meeting reminders" to "A meeting is about to start."),
+            NotificationCategories.REVENUE to ("Revenue" to "Payments due, due soon or overdue."),
+            NotificationCategories.CALL_ALERT to ("Call alerts" to "Something on a call needs a look."),
+            NotificationCategories.CREDITS to ("Credits" to "AI work skipped for want of credits."),
+            NotificationCategories.WHATSAPP to ("WhatsApp" to "Replies, bookings and campaigns on WhatsApp."),
+            NotificationCategories.SUPPORT_ACCESS to ("Support access" to "ArthaX support opened your workspace."),
+            NotificationCategories.ANNOUNCEMENT to ("Announcements" to "News from ArthaX."),
+            NotificationCategories.OTHER to ("Other CRM notifications" to "Anything else the CRM sends."),
+        )
 
         /** A request to call someone is stale after a few minutes; the colleague has moved on. */
         private const val DIAL_REQUEST_TIMEOUT_MILLIS = 10L * 60 * 1000

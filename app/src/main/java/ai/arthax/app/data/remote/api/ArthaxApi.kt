@@ -22,6 +22,10 @@ import ai.arthax.app.data.remote.dto.LeadUpdateRequest
 import ai.arthax.app.data.remote.dto.MarkJunkRequest
 import ai.arthax.app.data.remote.dto.MobileConfigResponseDto
 import ai.arthax.app.data.remote.dto.MobileSyncHealthRequest
+import ai.arthax.app.data.remote.dto.MarkAllNotificationsReadRequest
+import ai.arthax.app.data.remote.dto.MarkAllNotificationsReadResponse
+import ai.arthax.app.data.remote.dto.NotificationFeedDto
+import ai.arthax.app.data.remote.dto.NotificationSummaryDto
 import ai.arthax.app.data.remote.dto.SyncHealthAckDto
 import ai.arthax.app.data.remote.dto.LoginRequest
 import ai.arthax.app.data.remote.dto.SendOtpRequest
@@ -274,6 +278,47 @@ interface ArthaxApi {
         val EMPTY_JSON_BODY: RequestBody =
             "{}".toRequestBody("application/json".toMediaType())
     }
+
+    /**
+     * The signed-in user's notifications, newest first — the same rows the web bell shows.
+     *
+     * Every filter is optional and left out when null. `category` takes one or more
+     * comma-separated keys; dates are `YYYY-MM-DD`, inclusive, in IST.
+     */
+    @GET(ApiConfig.Paths.NOTIFICATIONS_FEED)
+    suspend fun getNotificationFeed(
+        @Query("page") page: Int = 1,
+        @Query("page_size") pageSize: Int = ApiConfig.NOTIFICATIONS_PAGE_SIZE,
+        @Query("status") status: String? = null,
+        @Query("category") category: String? = null,
+        @Query("date_from") dateFrom: String? = null,
+        @Query("date_to") dateTo: String? = null,
+        @Query("q") query: String? = null,
+    ): Response<NotificationFeedDto>
+
+    /** Total and unread, overall and per category. Drives the tab badge and the chips. */
+    @GET(ApiConfig.Paths.NOTIFICATIONS_SUMMARY)
+    suspend fun getNotificationSummary(
+        @Query("date_from") dateFrom: String? = null,
+        @Query("date_to") dateTo: String? = null,
+    ): Response<NotificationSummaryDto>
+
+    /**
+     * Mark one read. Answers a small JSON object nothing reads, so the body is raw. The
+     * empty body is for OkHttp, which refuses a PATCH without one — see
+     * [updateMeetingStatus].
+     */
+    @PATCH(ApiConfig.Paths.NOTIFICATION_READ)
+    suspend fun markNotificationRead(
+        @Path("notification_id") notificationId: String,
+        @Body body: RequestBody = EMPTY_JSON_BODY,
+    ): Response<ResponseBody>
+
+    /** Mark everything matching the filters read; no filters means everything. */
+    @POST(ApiConfig.Paths.NOTIFICATIONS_READ_ALL)
+    suspend fun markAllNotificationsRead(
+        @Body body: MarkAllNotificationsReadRequest,
+    ): Response<MarkAllNotificationsReadResponse>
 
     /** Hourly heartbeat for the fleet dashboard. The ack carries the current config version. */
     @POST(ApiConfig.Paths.SYNC_HEALTH)

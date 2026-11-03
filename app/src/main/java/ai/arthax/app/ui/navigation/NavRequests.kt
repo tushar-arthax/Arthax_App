@@ -1,5 +1,6 @@
 package ai.arthax.app.ui.navigation
 
+import ai.arthax.app.push.NotificationTarget
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -15,6 +16,14 @@ data class NavRequest(
     /** Makes two identical requests distinct, so tapping the same notification twice works. */
     val nonce: Long = System.nanoTime(),
 )
+
+/** Where a CRM notification opens. One mapping for the system notification and the screen. */
+fun NotificationTarget.toNavRequest(): NavRequest = when (this) {
+    is NotificationTarget.Lead -> NavRequest(tab = MainTab.LEADS, leadId = leadId)
+    NotificationTarget.Meetings -> NavRequest(tab = MainTab.MEETINGS)
+    NotificationTarget.Calls -> NavRequest(tab = MainTab.CALLS)
+    NotificationTarget.Inbox -> NavRequest(tab = MainTab.NOTIFICATIONS)
+}
 
 /**
  * The bridge from [ai.arthax.app.MainActivity]'s intent extras to the Compose tabs. A

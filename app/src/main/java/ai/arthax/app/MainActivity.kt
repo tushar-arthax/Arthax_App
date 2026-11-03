@@ -11,12 +11,15 @@ import androidx.activity.enableEdgeToEdge
 import ai.arthax.app.call.CallMonitorService
 import ai.arthax.app.data.local.prefs.AppSettings
 import ai.arthax.app.data.local.prefs.SecureTokenStore
+import ai.arthax.app.data.repository.NotificationsRepository
 import ai.arthax.app.data.repository.RemoteConfigRepository
 import ai.arthax.app.data.repository.SyncHealthReporter
 import ai.arthax.app.di.ApplicationScope
 import ai.arthax.app.push.DialRequest
 import ai.arthax.app.push.DialRequestPlacer
 import ai.arthax.app.push.DialRequests
+import ai.arthax.app.push.NotificationTapExtras
+import ai.arthax.app.ui.navigation.toNavRequest
 import ai.arthax.app.ui.navigation.MainTab
 import ai.arthax.app.ui.navigation.NavRequest
 import ai.arthax.app.ui.navigation.NavRequests
@@ -64,6 +67,8 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var dialRequests: DialRequests
 
     @Inject lateinit var dialPlacer: DialRequestPlacer
+
+    @Inject lateinit var notificationsRepository: NotificationsRepository
 
     @Inject @ApplicationScope lateinit var appScope: CoroutineScope
 
@@ -177,6 +182,8 @@ class MainActivity : ComponentActivity() {
 
     private fun handleDeepLink(intent: Intent?) {
         intent ?: return
+        if (handleNotificationTap(intent)) return
+
         val tab = MainTab.fromExtra(intent.getStringExtra(EXTRA_OPEN_TAB))
         val leadId = intent.getStringExtra(EXTRA_LEAD_ID)?.takeIf { it.isNotBlank() }
         val search = intent.getStringExtra(EXTRA_SEARCH)?.takeIf { it.isNotBlank() }
@@ -190,8 +197,34 @@ class MainActivity : ComponentActivity() {
         intent.removeExtra(EXTRA_SEARCH)
     }
 
+    /**
+     * A tap on a CRM notification: whichever posted it — Android itself with the app in the
+     * background (the push's `data` arrives as extras), or [AppNotifications] with the app
+     * open (same keys on purpose). Marks it read, as opening it on the web does, and goes
+     * where it points.
+     */
+    private fun handleNotificationTap(intent: Intent): Boolean {
+        val extras = intent.extras ?: return false
+        @Suppress("DEPRECATION")
+        val tap = NotificationTapExtras.read { key -> extras.get(key) } ?: return false
+
+        // App scope: the read must reach the server even if this screen goes away.
+        appScope.launch { runCatching { notificationsRepository.markRead(tap.notificationId) } }
+
+        navRequests.post(tap.target.toNavRequest())
+
+        // Consumed: a rotation must not re-apply the same jump or re-send the read.
+        intent.removeExtra(NotificationTapExtras.ACTION)
+        intent.removeExtra(NotificationTapExtras.NOTIFICATION_ID)
+        intent.removeExtra(NotificationTapExtras.ENTITY_TYPE)
+        intent.removeExtra(NotificationTapExtras.ENTITY_ID)
+        return true
+    }
+
     companion object {
         const val EXTRA_OPEN_TAB = "open_tab"
+
+        private const val ACTION_OPEN_NOTIFICATION_PREFIX = "ai.arthax.app.OPEN_NOTIFICATION:"
         const val EXTRA_LEAD_ID = "lead_id"
         const val EXTRA_SEARCH = "search"
 
@@ -207,6 +240,29 @@ class MainActivity : ComponentActivity() {
                 tab?.let { putExtra(EXTRA_OPEN_TAB, it.extra) }
                 leadId?.let { putExtra(EXTRA_LEAD_ID, it) }
                 search?.let { putExtra(EXTRA_SEARCH, it) }
+            }
+
+        /**
+         * The intent behind a CRM notification this app posts. Same keys as the push's own
+         * `data`, which Android puts on the launch intent when it posts the notification
+         * itself, so [handleNotificationTap] reads both alike.
+         */
+        fun notificationTapIntent(
+            context: Context,
+            notificationId: String,
+            entityType: String?,
+            entityId: String?,
+        ): Intent = Intent(context, MainActivity::class.java)
+            // Unique per notification. Android treats PendingIntents that differ only in
+            // extras as the same one, so without this a tap could open whichever
+            // notification was posted last with a clashing request code.
+            .setAction(ACTION_OPEN_NOTIFICATION_PREFIX + notificationId)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra(NotificationTapExtras.ACTION, ai.arthax.app.push.PushMessage.ACTION_NEW_NOTIFICATION)
+            .putExtra(NotificationTapExtras.NOTIFICATION_ID, notificationId)
+            .apply {
+                entityType?.let { putExtra(NotificationTapExtras.ENTITY_TYPE, it) }
+                entityId?.let { putExtra(NotificationTapExtras.ENTITY_ID, it) }
             }
     }
 }

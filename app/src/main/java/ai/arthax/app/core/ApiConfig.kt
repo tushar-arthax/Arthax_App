@@ -55,6 +55,12 @@ object ApiConfig {
 
         /** Status-only update; the new status rides as a query parameter, not a body. */
         const val MEETING_STATUS = "api/meetings/status/{meeting_id}"
+
+        /** The CRM's notifications: the same list, counts and read state as the web bell. */
+        const val NOTIFICATIONS_FEED = "api/notifications/feed"
+        const val NOTIFICATIONS_SUMMARY = "api/notifications/summary"
+        const val NOTIFICATION_READ = "api/notifications/{notification_id}/read"
+        const val NOTIFICATIONS_READ_ALL = "api/notifications/read-all"
     }
 
     /** Default page size when listing leads. The server caps and defaults to 100. */
@@ -67,6 +73,9 @@ object ApiConfig {
     const val CALLS_PAGE_SIZE = 20
 
     const val MEETINGS_PAGE_SIZE = 50
+
+    /** Notifications page. The server caps a page at 100. */
+    const val NOTIFICATIONS_PAGE_SIZE = 20
 
     /**
      * Timeline page. That route takes a `limit` and no offset, so "load more" asks for a
